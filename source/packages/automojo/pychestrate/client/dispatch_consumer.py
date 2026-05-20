@@ -55,6 +55,15 @@ from automojo.pychestrate.client.build_executor import (
 from automojo.pychestrate.client.build_progress_reporter import (
     BuildProgressReporter,
 )
+from automojo.pychestrate.client.provision_executor import (
+    DEFAULT_PROVISION_EXECUTOR_ASPECTS,
+    ProvisionExecutorAspects,
+    ProvisionRunOutcome,
+    execute_provision_envelope,
+)
+from automojo.pychestrate.client.provision_progress_reporter import (
+    ProvisionProgressReporter,
+)
 from automojo.pychestrate.client.envelope_verifier import (
     EnvelopeVerificationResult,
     verify_dispatch_envelope,
@@ -70,6 +79,7 @@ from automojo.pychestrate.client.result_uploader import (
     DEFAULT_RESULT_UPLOADER_ASPECTS,
     ResultUploaderAspects,
     upload_build_results,
+    upload_provision_results,
     upload_run_results,
 )
 from automojo.pychestrate.client.signing_keys import refresh_signing_keys
@@ -123,6 +133,8 @@ class DispatchConsumerAspects:
                  DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
                  build_executor_aspects: BuildExecutorAspects =
                  DEFAULT_BUILD_EXECUTOR_ASPECTS,
+                 provision_executor_aspects: ProvisionExecutorAspects =
+                 DEFAULT_PROVISION_EXECUTOR_ASPECTS,
                  progress_reporter_aspects: ProgressReporterAspects =
                  DEFAULT_PROGRESS_REPORTER_ASPECTS,
                  result_uploader_aspects: ResultUploaderAspects =
@@ -147,6 +159,10 @@ class DispatchConsumerAspects:
             :param build_executor_aspects: Aspects forwarded to the build
                                            executor for each dispatched
                                            ``job_kind=build`` job.
+            :param provision_executor_aspects: Aspects forwarded to the
+                                               provision executor for each
+                                               dispatched
+                                               ``job_kind=provision`` job.
             :param progress_reporter_aspects: Aspects forwarded to the
                                               progress reporter created for
                                               each dispatched job.
@@ -178,6 +194,7 @@ class DispatchConsumerAspects:
         self._sleep_func = sleep_func if sleep_func is not None else time.sleep
         self._executor_aspects = executor_aspects
         self._build_executor_aspects = build_executor_aspects
+        self._provision_executor_aspects = provision_executor_aspects
         self._progress_reporter_aspects = progress_reporter_aspects
         self._result_uploader_aspects = result_uploader_aspects
         return
@@ -209,6 +226,10 @@ class DispatchConsumerAspects:
     @property
     def build_executor_aspects(self) -> BuildExecutorAspects:
         return self._build_executor_aspects
+
+    @property
+    def provision_executor_aspects(self) -> ProvisionExecutorAspects:
+        return self._provision_executor_aspects
 
     @property
     def progress_reporter_aspects(self) -> ProgressReporterAspects:
@@ -505,6 +526,62 @@ def _handle_build_job(*, client: PychestrateMtlsClient, state: ClientState,
     return rtnval
 
 
+def _handle_provision_job(*, client: PychestrateMtlsClient,
+                           state: ClientState, envelope: Dict[str, Any],
+                           run_id: str, client_id: str, local_run_id: str,
+                           aspects: DispatchConsumerAspects) -> str:
+    """
+        Runs a verified ``job_kind=provision`` envelope through the
+        provision executor (provisioning-spec -> infra-tool invocation),
+        uploads the provision output tree, and returns the ack note.
+
+        :param client: A configured :class:`PychestrateMtlsClient`.
+        :param state: The :class:`ClientState`.
+        :param envelope: The verified envelope dict.
+        :param run_id: The server-assigned run UUID.
+        :param client_id: The assigned client UUID.
+        :param local_run_id: The client-minted local run identifier.
+        :param aspects: Behavior-shaping aspects.
+
+        :returns: The free-form ack note describing the provision + upload.
+    """
+    progress_reporter = ProvisionProgressReporter(
+        state=state, run_id=run_id, client_id=client_id)
+
+    outcome: ProvisionRunOutcome = execute_provision_envelope(
+        state=state,
+        envelope=envelope,
+        local_run_id=local_run_id,
+        aspects=aspects.provision_executor_aspects,
+        progress_reporter=progress_reporter,
+    )
+
+    upload_outcome = upload_provision_results(
+        client=client,
+        state=state,
+        envelope=envelope,
+        result_dir=outcome.output_dir,
+        run_succeeded=outcome.succeeded,
+        aspects=aspects.result_uploader_aspects,
+    )
+
+    if outcome.succeeded:
+        run_note = "provision run succeeded (driver={} action={})".format(
+            outcome.driver_name, outcome.action)
+    else:
+        run_note = "provision run FAILED ({})".format(outcome.detail)
+
+    if upload_outcome.succeeded:
+        upload_note = "output uploaded ({} files)".format(
+            upload_outcome.file_count)
+    else:
+        upload_note = "output upload INCOMPLETE ({})".format(
+            upload_outcome.detail)
+
+    rtnval = "ACCEPTED: {}; {}.".format(run_note, upload_note)
+    return rtnval
+
+
 def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
                         pending: Any,
                         aspects: DispatchConsumerAspects) -> bool:
@@ -595,24 +672,10 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
     job_kind = _resolve_job_kind(envelope=envelope)
 
     if job_kind == JOB_KIND_PROVISION:
-        # The provisioning executor is a later PR. A provision envelope
-        # must NOT crash the consumer -- it is acked with a rejection note
-        # so the service operator sees this client cannot run it.
-        logger.warning(
-            "pychestrate-client: provision jobs not yet supported by this "
-            "client (run_id=%s envelope_id=%s); acking with rejection.",
-            run_id, envelope_id,
-        )
-        acknowledge_dispatch(
-            client=client, run_id=run_id, envelope_id=envelope_id,
-            dispatch_attempt_id=dispatch_attempt_id, client_id=client_id,
-            local_run_id=local_run_id,
-            notes="REJECTED: provision jobs not yet supported by this "
-                  "client.")
-        rtnval = False
-        return rtnval
-
-    if job_kind == JOB_KIND_BUILD:
+        notes = _handle_provision_job(
+            client=client, state=state, envelope=envelope, run_id=run_id,
+            client_id=client_id, local_run_id=local_run_id, aspects=aspects)
+    elif job_kind == JOB_KIND_BUILD:
         notes = _handle_build_job(
             client=client, state=state, envelope=envelope, run_id=run_id,
             client_id=client_id, local_run_id=local_run_id, aspects=aspects)
