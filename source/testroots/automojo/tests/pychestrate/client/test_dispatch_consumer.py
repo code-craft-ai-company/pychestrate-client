@@ -83,18 +83,36 @@ def _pending_dict(envelope, signature_hex, key_id=SIGNING_KEY_ID):
     return pending
 
 
-class _FakeDispatchGroup:
+class _FakeSigningKeySet:
     """
-        Records every dispatch-ack posted by the consumer.
+        Mirrors the codegen'd ``Signingkeyset`` shape (a ``keys`` list).
     """
 
-    def __init__(self):
+    def __init__(self, keys):
+        self.keys = list(keys)
+        return
+
+
+class _FakeDispatchGroup:
+    """
+        Records every dispatch-ack posted by the consumer and serves the
+        envelope signing-key set.
+    """
+
+    def __init__(self, signing_keys=None):
         self.acks = []
+        self._signing_keys = signing_keys if signing_keys is not None else []
+        self.signing_key_calls = 0
         return
 
     def dispatch_ack_run(self, run_id, body, **kwargs):
         self.acks.append((run_id, body))
         return None
+
+    def envelope_signing_keys_list(self, **kwargs):
+        self.signing_key_calls += 1
+        rtnval = _FakeSigningKeySet(keys=self._signing_keys)
+        return rtnval
 
 
 class _FakeProgressGroup:
@@ -153,18 +171,49 @@ class _FakeRestClient:
         Minimal stand-in for :class:`PychestrateMtlsClient`.
     """
 
-    def __init__(self, sequence):
+    def __init__(self, sequence, signing_keys=None):
         self.clients = _FakeClientsGroup(sequence)
-        self.dispatch = _FakeDispatchGroup()
+        self.dispatch = _FakeDispatchGroup(signing_keys=signing_keys)
         self.progress = _FakeProgressGroup()
         self.results = _FakeResultsGroup()
+        self._session = object()
+        return
+
+    def authenticate(self):
         return
 
 
-def _make_enrolled_state(state_dir, signing_private_key):
+def _signing_public_pem(signing_private_key):
     """
-        Writes a fake enrolled state directory with an installed signing
-        public key and returns the bound :class:`ClientState`.
+        Returns the PEM SubjectPublicKeyInfo text for a private key.
+    """
+    rtnval = signing_private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    return rtnval
+
+
+def _signing_key_entry(signing_private_key, key_id=SIGNING_KEY_ID):
+    """
+        Returns a JWKS-style signing-key dict for a private key.
+    """
+    rtnval = {
+        "key_id": key_id,
+        "algorithm": "ed25519",
+        "public_key_pem": _signing_public_pem(signing_private_key),
+        "status": "active",
+    }
+    return rtnval
+
+
+def _make_enrolled_state(state_dir, signing_private_key,
+                         persist_signing_keys=True):
+    """
+        Writes a fake enrolled state directory and returns the bound
+        :class:`ClientState`. The JWKS-style signing-key set is persisted
+        unless ``persist_signing_keys`` is False (used to exercise the
+        lazy refresh-on-unknown-key path).
     """
     state = ClientState(state_dir=state_dir)
     state.ensure_dir()
@@ -173,11 +222,9 @@ def _make_enrolled_state(state_dir, signing_private_key):
     state.write_service_ca(ca_pem="-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----\n")
     state.write_client_id(client_id="55555555-5555-5555-5555-555555555555")
 
-    public_pem = signing_private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("ascii")
-    state.write_envelope_signing_key(key_pem=public_pem)
+    if persist_signing_keys:
+        state.write_envelope_signing_keys(
+            keys=[_signing_key_entry(signing_private_key)])
 
     state.write_config(config={
         "service_url": "https://pychestrate.example.com",
@@ -185,7 +232,6 @@ def _make_enrolled_state(state_dir, signing_private_key):
         "scheme": "https",
         "port": None,
         "client_name": "unit-client",
-        "envelope_signing_key_id": SIGNING_KEY_ID,
     })
     return state
 
@@ -228,8 +274,6 @@ def test_handle_one_dispatch_verifies_executes_and_acks():
                 client=client,
                 state=state,
                 pending=pending,
-                signing_public_key=signing_key.public_key(),
-                signing_key_id=SIGNING_KEY_ID,
                 aspects=DispatchConsumerAspects(),
             )
 
@@ -276,8 +320,6 @@ def test_handle_one_dispatch_rejects_tampered_envelope_without_executing():
                 client=client,
                 state=state,
                 pending=pending,
-                signing_public_key=signing_key.public_key(),
-                signing_key_id=SIGNING_KEY_ID,
                 aspects=DispatchConsumerAspects(),
             )
 
@@ -285,6 +327,119 @@ def test_handle_one_dispatch_rejects_tampered_envelope_without_executing():
             testbase.assert_equal(executed["count"], 0)
             # A rejected dispatch is still acked (with a rejection note).
             testbase.assert_equal(len(client.dispatch.acks), 1)
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("REJECTED" in ack_body.notes)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+    return
+
+
+def test_handle_one_dispatch_refreshes_signing_keys_on_unknown_key():
+    # An envelope signed by a key the persisted set does not carry must
+    # trigger a single refresh from GET /envelope-signing-keys; once the
+    # refreshed set carries the key the envelope verifies and executes.
+    from automojo.pychestrate.client.result_uploader import (
+        ResultStoreDriver,
+        ResultUploaderAspects,
+    )
+
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(
+        serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    class _NoopDriver(ResultStoreDriver):
+        def put_tree(self, *, run_id, backend_driver, backend_key_prefix,
+                     entries):
+            return
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects,
+                      progress_reporter=None):
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # The state is enrolled but carries NO persisted signing keys.
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key,
+                persist_signing_keys=False)
+            # The service serves the signing key through the refresh
+            # endpoint.
+            client = _FakeRestClient(
+                sequence=[],
+                signing_keys=[_signing_key_entry(signing_key)])
+
+            aspects = DispatchConsumerAspects(
+                result_uploader_aspects=ResultUploaderAspects(
+                    store_driver=_NoopDriver()),
+            )
+            executed_flag = handle_one_dispatch(
+                client=client,
+                state=state,
+                pending=pending,
+                aspects=aspects,
+            )
+
+            testbase.assert_true(executed_flag)
+            # The refresh endpoint was hit exactly once.
+            testbase.assert_equal(client.dispatch.signing_key_calls, 1)
+            # The refreshed set is now persisted to disk.
+            testbase.assert_true(state.has_envelope_signing_keys())
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("ACCEPTED" in ack_body.notes)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+    return
+
+
+def test_handle_one_dispatch_rejects_unknown_key_after_refresh():
+    # When even a refresh cannot resolve the envelope's signature key id
+    # the dispatch is rejected without execution.
+    signing_key = Ed25519PrivateKey.generate()
+    other_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(
+        serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex,
+                            key_id="absent-key-id")
+
+    executed = {"count": 0}
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects,
+                      progress_reporter=None):
+        executed["count"] += 1
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key,
+                persist_signing_keys=False)
+            # The refresh serves only an unrelated key id.
+            client = _FakeRestClient(
+                sequence=[],
+                signing_keys=[_signing_key_entry(
+                    other_key, key_id="some-other-key")])
+
+            executed_flag = handle_one_dispatch(
+                client=client,
+                state=state,
+                pending=pending,
+                aspects=DispatchConsumerAspects(),
+            )
+
+            testbase.assert_false(executed_flag)
+            testbase.assert_equal(executed["count"], 0)
+            testbase.assert_equal(client.dispatch.signing_key_calls, 1)
             _, ack_body = client.dispatch.acks[0]
             testbase.assert_true("REJECTED" in ack_body.notes)
     finally:
@@ -443,8 +598,6 @@ def test_handle_one_dispatch_streams_progress_uploads_and_completes():
                 client=client,
                 state=state,
                 pending=pending,
-                signing_public_key=signing_key.public_key(),
-                signing_key_id=SIGNING_KEY_ID,
                 aspects=aspects,
             )
 
@@ -469,18 +622,28 @@ def test_handle_one_dispatch_streams_progress_uploads_and_completes():
 
 
 def test_handle_one_dispatch_upload_failure_still_acks():
-    # A result-upload failure (no store driver wired) must not abort the
-    # consumer: the run is still acked and the completion manifest posted.
+    # A genuine result-upload failure (the store driver raises) must not
+    # abort the consumer: the run is still acked and the completion
+    # manifest posted, and the run is marked locally for retry.
     signing_key = Ed25519PrivateKey.generate()
     envelope = _sample_envelope()
     signature_hex = signing_key.sign(
         serialize_envelope_canonical(envelope)).hex()
     pending = _pending_dict(envelope, signature_hex)
 
-    from automojo.pychestrate.client.result_uploader import run_needs_upload_retry
+    from automojo.pychestrate.client.result_uploader import (
+        ResultStoreDriver,
+        ResultUploaderAspects,
+        run_needs_upload_retry,
+    )
     from automojo.pychestrate.client.testbase_executor import (
         resolve_run_output_dir,
     )
+
+    class _FailingDriver(ResultStoreDriver):
+        def put_tree(self, *, run_id, backend_driver, backend_key_prefix,
+                     entries):
+            raise RuntimeError("simulated presign 5xx")
 
     def _fake_execute(*, state, envelope, local_run_id, aspects,
                       progress_reporter=None):
@@ -502,14 +665,16 @@ def test_handle_one_dispatch_upload_failure_still_acks():
                 os.path.join(tmpdir, "state"), signing_key)
             client = _FakeRestClient(sequence=[])
 
-            # No store driver wired -> upload cannot complete.
+            # The store driver raises -> upload cannot complete.
+            aspects = DispatchConsumerAspects(
+                result_uploader_aspects=ResultUploaderAspects(
+                    store_driver=_FailingDriver()),
+            )
             executed_flag = handle_one_dispatch(
                 client=client,
                 state=state,
                 pending=pending,
-                signing_public_key=signing_key.public_key(),
-                signing_key_id=SIGNING_KEY_ID,
-                aspects=DispatchConsumerAspects(),
+                aspects=aspects,
             )
 
             testbase.assert_true(executed_flag)

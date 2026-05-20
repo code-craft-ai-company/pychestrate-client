@@ -19,28 +19,35 @@
                    ``backend_driver``), and then POSTs the ``ResultManifest``
                    to ``POST /api/v1/runs/{run_id}/results/complete``.
 
-                   Upload mechanism / server gap -- per the
-                   ``5-shared-results-backend`` design the client is expected
-                   to write the result tree DIRECTLY to the shared object
-                   store: "The client receives ``backend_key_prefix`` and
-                   ``backend_driver`` inside the signed envelope; it uses its
-                   own object-store credentials to write." There is NO
-                   per-artifact HTTP upload endpoint -- the codegen'd
-                   ``artifacts`` REST group exposes GET endpoints only. Two
-                   pieces the design references are NOT yet delivered to the
-                   client: (1) the envelope's ``JobResultsLocator`` carries
-                   only ``backend_key_prefix`` + ``backend_driver`` and no
-                   object-store endpoint / credentials, and (2) the
-                   ``presign_put`` path on ``SharedResultsBackend`` is an
-                   internal API with no HTTP surface. The uploader therefore
-                   abstracts the byte transfer behind an injectable
-                   :class:`ResultStoreDriver` (Aspects pattern): a site that
-                   provisions an object-store driver out-of-band wires it in;
-                   when no driver is wired the tree-walk + manifest are still
-                   produced, the artifact bytes are simply not transferred,
-                   and the local run record is marked ``upload_failed`` so the
-                   next ``run`` invocation can retry. The
-                   ``results/complete`` POST itself is fully implemented.
+                   Upload mechanism (M4) -- the service now exposes
+                   ``POST /api/v1/runs/{run_id}/artifacts:presign``, which
+                   mints short-lived presigned PUT URLs for the relative
+                   artifact paths the client discovered while walking its
+                   result tree. The default :class:`PresignedUploadDriver`
+                   walks the tree, batch-requests presigned targets, PUTs
+                   each artifact's bytes to its ``put_url`` (carrying the
+                   target's verbatim ``headers``), and then posts the
+                   ``ResultManifest`` to ``results/complete``. Object-store
+                   credentials never leave the server -- the credentialed
+                   transfer is encoded entirely in the presigned URL.
+
+                   The byte transfer stays abstracted behind an injectable
+                   :class:`ResultStoreDriver` (Aspects pattern) so a site
+                   that provisions a direct object-store driver can still
+                   wire one in; the presigned driver is simply the default.
+                   A genuine failure (network error, presign 5xx) marks the
+                   local run record ``upload_failed`` so the next ``run``
+                   invocation can retry. The ``results/complete`` POST is
+                   fully implemented.
+
+                   mTLS -- the ``:presign`` request and (for the
+                   local-filesystem fallback) the artifact PUTs flow over
+                   the client's mTLS-authenticated session. The presigned
+                   PUT may point back at an mTLS-gated local-filesystem
+                   upload sink on the service, so the PUT reuses the REST
+                   client's authenticated :class:`requests.Session`; for an
+                   S3-backed deploy the client certificate is simply
+                   ignored by the object store.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
@@ -59,7 +66,12 @@ import os
 
 from datetime import datetime, timezone
 
-from automojo.pychestrate.rest.client.models.results import Resultmanifest
+from automojo.errors.exceptions import HTTPRequestError
+
+from automojo.pychestrate.rest.client.models.results import (
+    Artifactpresignrequest,
+    Resultmanifest,
+)
 
 from automojo.pychestrate.client.pychestratemtlsclient import PychestrateMtlsClient
 from automojo.pychestrate.client.state import ClientState
@@ -92,13 +104,16 @@ class ResultStoreDriver:
         uploader transfers result-tree bytes to the shared results object
         store.
 
-        It is intentionally abstract: the ``5-shared-results-backend`` design
-        has the client write directly to the object store with its own
-        credentials, but the concrete object-store binding is provisioned at
-        the site / pod level and is not delivered through the Pychestrate
-        REST surface. A site supplies a concrete driver via
-        :class:`ResultUploaderAspects`; the uploader never hand-rolls a
-        storage protocol.
+        The default driver wired by :class:`ResultUploaderAspects` is the
+        :class:`PresignedUploadDriver`, which obtains presigned PUT URLs
+        from ``POST /api/v1/runs/{run_id}/artifacts:presign`` and PUTs the
+        bytes directly. A site that provisions its own direct object-store
+        binding may instead supply a custom driver: such a driver overrides
+        :meth:`put_object` (per-file transfer) and inherits the default
+        :meth:`put_tree`, which loops :meth:`put_object` over the tree.
+
+        A driver that transfers the whole tree in a single batch (the
+        presigned driver does) overrides :meth:`put_tree` directly.
     """
 
     def put_object(self, *, backend_driver: str, backend_key_prefix: str,
@@ -106,6 +121,9 @@ class ResultStoreDriver:
         """
             Transfers one local file to the shared object store under
             ``<backend_key_prefix>/<relative_path>``.
+
+            The base implementation raises :class:`NotImplementedError`; a
+            per-file site driver overrides this method.
 
             :param backend_driver: The object-store driver name the envelope
                                    declared.
@@ -120,23 +138,53 @@ class ResultStoreDriver:
             :raises: NotImplementedError
         """
         errmsg_lines = [
-            "No concrete ResultStoreDriver is wired into the "
-            "pychestrate-client result uploader.",
+            "ResultStoreDriver.put_object is not implemented by this driver.",
             "    backend_driver: {}".format(backend_driver),
             "    backend_key_prefix: {}".format(backend_key_prefix),
             "    relative_path: {}".format(relative_path),
-            "The shared-results object store is provisioned at the site / "
-            "pod level; pass a concrete driver via ResultUploaderAspects.",
+            "Override put_object (per-file) or put_tree (batch) on the "
+            "concrete ResultStoreDriver.",
         ]
         errmsg = os.linesep.join(errmsg_lines)
         raise NotImplementedError(errmsg)
+
+    def put_tree(self, *, run_id: str, backend_driver: str,
+                 backend_key_prefix: str,
+                 entries: List["ResultTreeEntry"]) -> None:
+        """
+            Transfers every file of a walked result tree to the shared
+            results store.
+
+            The base implementation loops :meth:`put_object` over the
+            entries so a per-file site driver works without overriding this
+            method. A batch-oriented driver (such as the
+            :class:`PresignedUploadDriver`) overrides :meth:`put_tree`
+            directly.
+
+            :param run_id: The server-assigned run UUID.
+            :param backend_driver: The object-store driver name the envelope
+                                   declared.
+            :param backend_key_prefix: The per-run key prefix the envelope
+                                       declared.
+            :param entries: The walked result-tree entries to transfer.
+
+            :returns: None
+            :raises: Exception on any transfer failure.
+        """
+        for entry in entries:
+            self.put_object(
+                backend_driver=backend_driver,
+                backend_key_prefix=backend_key_prefix,
+                relative_path=entry.relative_path,
+                local_path=entry.absolute_path)
+        return
 
 
 class ResultUploaderAspects:
     """
         The :class:`ResultUploaderAspects` packages caller-controlled
-        behavior for the result uploader (the object-store driver used to
-        transfer the result tree).
+        behavior for the result uploader (the driver used to transfer the
+        result tree).
 
         Following the project's Aspects pattern, behavior modification is
         carried as data on a single parameter rather than via decorators.
@@ -147,11 +195,13 @@ class ResultUploaderAspects:
             Initializes a :class:`ResultUploaderAspects` instance.
 
             :param store_driver: The :class:`ResultStoreDriver` used to
-                                 transfer result-tree bytes to the shared
-                                 object store. ``None`` leaves no driver
-                                 wired -- the tree-walk and manifest are
-                                 still produced and the local run record is
-                                 marked ``upload_failed`` for retry.
+                                 transfer result-tree bytes. ``None`` (the
+                                 default) selects the default
+                                 :class:`PresignedUploadDriver`, which
+                                 uploads through the service's presigned-URL
+                                 protocol. A site that provisions its own
+                                 direct object-store binding may wire a
+                                 custom driver here instead.
         """
         self._store_driver = store_driver
         return
@@ -292,6 +342,206 @@ def walk_result_tree(result_dir: str) -> List[ResultTreeEntry]:
     return rtnval
 
 
+#: Content type sent on every presigned artifact PUT.
+ARTIFACT_PUT_CONTENT_TYPE = "application/octet-stream"
+
+
+def _upload_target_to_dict(target: Any) -> Dict[str, Any]:
+    """
+        Coerces an ``Artifactuploadtarget`` schema object (or a raw dict)
+        into a plain dict.
+
+        :param target: The upload-target object from an
+                       ``ArtifactPresignResponse``.
+
+        :returns: A dict view of the upload target.
+    """
+    if isinstance(target, dict):
+        rtnval = target
+        return rtnval
+
+    to_dict = getattr(target, "to_dict", None)
+    if callable(to_dict):
+        rtnval = to_dict()
+        return rtnval
+
+    rtnval = {
+        "path": getattr(target, "path", None),
+        "put_url": getattr(target, "put_url", None),
+        "expires_at": getattr(target, "expires_at", None),
+        "headers": getattr(target, "headers", None),
+    }
+    return rtnval
+
+
+class PresignedUploadDriver(ResultStoreDriver):
+    """
+        The :class:`PresignedUploadDriver` is the default
+        :class:`ResultStoreDriver`. It transfers a run's result tree using
+        the service's presigned-URL upload protocol:
+
+            1. Batch-request presigned PUT targets from
+               ``POST /api/v1/runs/{run_id}/artifacts:presign`` for every
+               relative path in the walked result tree.
+            2. PUT each artifact's bytes to its ``put_url``, sending the
+               target's ``headers`` verbatim.
+
+        The presign request flows over the client's mTLS-authenticated REST
+        client. The PUT reuses that same authenticated
+        :class:`requests.Session` because the local-filesystem fallback
+        ``put_url`` points back at an mTLS-gated upload sink on the service;
+        for an S3-backed deploy the pinned client certificate is simply
+        ignored by the object store.
+    """
+
+    def __init__(self, *, client: PychestrateMtlsClient):
+        """
+            Initializes a :class:`PresignedUploadDriver`.
+
+            :param client: The configured :class:`PychestrateMtlsClient`
+                           used for both the ``:presign`` request and the
+                           artifact PUTs.
+        """
+        self._client = client
+        return
+
+    @property
+    def client(self) -> PychestrateMtlsClient:
+        """
+            Gets the mTLS client this driver transfers through.
+
+            :returns: The :class:`PychestrateMtlsClient`.
+        """
+        return self._client
+
+    def _presign_paths(self, run_id: str,
+                       relative_paths: List[str]) -> List[Dict[str, Any]]:
+        """
+            Calls ``POST /api/v1/runs/{run_id}/artifacts:presign`` for the
+            supplied relative paths and returns the minted upload targets.
+
+            :param run_id: The server-assigned run UUID.
+            :param relative_paths: The relative artifact paths to presign.
+
+            :returns: A list of upload-target dicts (``path`` / ``put_url``
+                      / ``headers`` / ``expires_at``).
+            :raises: requests.RequestException, automojo HTTP error types
+        """
+        request_body = Artifactpresignrequest(paths=relative_paths)
+
+        response = self._client.results.artifacts_presign_upload(
+            run_id=run_id, body=request_body)
+
+        raw_uploads = getattr(response, "uploads", None)
+        if raw_uploads is None and isinstance(response, dict):
+            raw_uploads = response.get("uploads", None)
+        if raw_uploads is None:
+            raw_uploads = []
+
+        rtnval = [_upload_target_to_dict(target=nxt) for nxt in raw_uploads]
+        return rtnval
+
+    def _put_artifact(self, *, target: Dict[str, Any],
+                      local_path: str) -> None:
+        """
+            PUTs one artifact's bytes to a presigned ``put_url``.
+
+            :param target: The upload-target dict for the artifact.
+            :param local_path: The absolute path of the local file.
+
+            :returns: None
+            :raises: requests.RequestException, HTTPRequestError
+        """
+        put_url = target.get("put_url", None)
+        if put_url is None or len(put_url) == 0:
+            raise HTTPRequestError(
+                "Presigned upload target carries no 'put_url' for "
+                "{}.".format(target.get("path")))
+
+        headers: Dict[str, str] = {"Content-Type": ARTIFACT_PUT_CONTENT_TYPE}
+        target_headers = target.get("headers", None)
+        if isinstance(target_headers, dict):
+            for header_name, header_value in target_headers.items():
+                headers[header_name] = str(header_value)
+
+        if self._client._session is None:
+            self._client.authenticate()
+        session = self._client._session
+
+        with open(local_path, "rb") as artf:
+            artifact_bytes = artf.read()
+
+        response = session.put(put_url, data=artifact_bytes, headers=headers)
+
+        if response.status_code not in (200, 201, 204):
+            errmsg_lines = [
+                "Presigned artifact PUT failed.",
+                "    path: {}".format(target.get("path")),
+                "    url: {}".format(put_url),
+                "    status: {}".format(response.status_code),
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise HTTPRequestError(errmsg)
+
+        return
+
+    def put_tree(self, *, run_id: str, backend_driver: str,
+                 backend_key_prefix: str,
+                 entries: List["ResultTreeEntry"]) -> None:
+        """
+            Transfers a walked result tree using the presigned-URL upload
+            protocol: batch-presign every relative path, then PUT each
+            artifact's bytes to its minted target.
+
+            :param run_id: The server-assigned run UUID.
+            :param backend_driver: The object-store driver name (carried
+                                   for parity; the transfer is fully
+                                   described by the presigned targets).
+            :param backend_key_prefix: The per-run key prefix (carried for
+                                       parity).
+            :param entries: The walked result-tree entries to transfer.
+
+            :returns: None
+            :raises: requests.RequestException, automojo HTTP error types
+        """
+        if len(entries) == 0:
+            logger.info(
+                "pychestrate-client: result tree for run_id=%s is empty; "
+                "no artifacts to presign.", run_id,
+            )
+            return
+
+        relative_paths = [entry.relative_path for entry in entries]
+
+        targets = self._presign_paths(
+            run_id=run_id, relative_paths=relative_paths)
+
+        targets_by_path: Dict[str, Dict[str, Any]] = {}
+        for nxttarget in targets:
+            target_path = nxttarget.get("path", None)
+            if target_path is not None:
+                targets_by_path[target_path] = nxttarget
+
+        for entry in entries:
+            target = targets_by_path.get(entry.relative_path, None)
+            if target is None:
+                errmsg_lines = [
+                    "The presign response is missing an upload target.",
+                    "    run_id: {}".format(run_id),
+                    "    relative_path: {}".format(entry.relative_path),
+                ]
+                errmsg = os.linesep.join(errmsg_lines)
+                raise HTTPRequestError(errmsg)
+
+            self._put_artifact(target=target, local_path=entry.absolute_path)
+
+        logger.info(
+            "pychestrate-client: PUT %d presigned artifact(s) for run_id=%s.",
+            len(entries), run_id,
+        )
+        return
+
+
 def _read_summary_counts(result_dir: str) -> Dict[str, int]:
     """
         Reads the four test counters from a testbase ``testrun_summary.json``
@@ -365,61 +615,48 @@ def _extract_results_locator(envelope: Dict[str, Any]) -> Dict[str, str]:
     return rtnval
 
 
-def upload_result_tree(*, entries: List[ResultTreeEntry], backend_driver: str,
-                        backend_key_prefix: str,
-                        store_driver: Optional[ResultStoreDriver]) -> bool:
+def upload_result_tree(*, run_id: str, entries: List[ResultTreeEntry],
+                        backend_driver: str, backend_key_prefix: str,
+                        store_driver: ResultStoreDriver) -> bool:
     """
         Transfers every file in a walked result tree to the shared results
-        object store via the supplied :class:`ResultStoreDriver`.
+        store via the supplied :class:`ResultStoreDriver`.
 
-        When no driver is wired the transfer is skipped and ``False`` is
-        returned so the caller can mark the run ``upload_failed`` and retry.
-        A driver that raises on any single file is logged and also yields a
+        The transfer is delegated to :meth:`ResultStoreDriver.put_tree`. A
+        driver that raises during the transfer is logged and yields a
         ``False`` (failed) result -- partial uploads are not treated as
-        success.
+        success, and the caller marks the run ``upload_failed`` for retry.
 
+        :param run_id: The server-assigned run UUID.
         :param entries: The walked result-tree entries.
         :param backend_driver: The object-store driver name from the
                                envelope's ``JobResultsLocator``.
         :param backend_key_prefix: The per-run key prefix from the envelope's
                                    ``JobResultsLocator``.
-        :param store_driver: The :class:`ResultStoreDriver` to transfer with,
-                             or ``None`` when none is wired.
+        :param store_driver: The :class:`ResultStoreDriver` to transfer with.
 
-        :returns: True when every file transferred; False when no driver is
-                  wired or any transfer failed.
+        :returns: True when every file transferred; False when the transfer
+                  failed.
     """
-    if store_driver is None:
-        logger.warning(
-            "pychestrate-client: no ResultStoreDriver wired; result-tree "
-            "byte transfer skipped (%d files) for prefix %s. The run will "
-            "be marked upload_failed for retry.",
-            len(entries), backend_key_prefix,
+    try:
+        store_driver.put_tree(
+            run_id=run_id,
+            backend_driver=backend_driver,
+            backend_key_prefix=backend_key_prefix,
+            entries=entries)
+    except Exception as puterr:
+        logger.error(
+            "pychestrate-client: result-tree upload failed for run_id=%s "
+            "(prefix=%s): %s",
+            run_id, backend_key_prefix, puterr,
         )
         rtnval = False
         return rtnval
 
-    transferred = 0
-    for entry in entries:
-        try:
-            store_driver.put_object(
-                backend_driver=backend_driver,
-                backend_key_prefix=backend_key_prefix,
-                relative_path=entry.relative_path,
-                local_path=entry.absolute_path)
-            transferred += 1
-        except Exception as puterr:
-            logger.error(
-                "pychestrate-client: result-tree upload failed at %s "
-                "(prefix=%s): %s",
-                entry.relative_path, backend_key_prefix, puterr,
-            )
-            rtnval = False
-            return rtnval
-
     logger.info(
-        "pychestrate-client: uploaded %d result-tree files to prefix %s.",
-        transferred, backend_key_prefix,
+        "pychestrate-client: uploaded %d result-tree file(s) for run_id=%s "
+        "(prefix=%s).",
+        len(entries), run_id, backend_key_prefix,
     )
     rtnval = True
     return rtnval
@@ -712,10 +949,14 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
     entries = walk_result_tree(result_dir=result_dir)
     counts = _read_summary_counts(result_dir=result_dir)
 
+    store_driver = aspects.store_driver
+    if store_driver is None:
+        store_driver = PresignedUploadDriver(client=client)
+
     tree_uploaded = upload_result_tree(
-        entries=entries, backend_driver=backend_driver,
+        run_id=run_id, entries=entries, backend_driver=backend_driver,
         backend_key_prefix=backend_key_prefix,
-        store_driver=aspects.store_driver)
+        store_driver=store_driver)
 
     notes = None
     if not tree_uploaded:

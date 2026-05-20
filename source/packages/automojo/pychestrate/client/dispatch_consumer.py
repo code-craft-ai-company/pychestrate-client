@@ -27,7 +27,6 @@ __credits__ = []
 from typing import Any, Callable, Dict, Optional
 
 import logging
-import os
 import signal
 import time
 import uuid
@@ -38,8 +37,7 @@ from automojo.errors.exceptions import BadParameterError, ConfigurationError
 
 from automojo.pychestrate.client.envelope_verifier import (
     EnvelopeVerificationResult,
-    load_signing_public_key,
-    verify_signed_envelope,
+    verify_dispatch_envelope,
 )
 from automojo.pychestrate.client.heartbeat import build_client_from_state
 from automojo.pychestrate.client.progress_reporter import (
@@ -53,6 +51,7 @@ from automojo.pychestrate.client.result_uploader import (
     ResultUploaderAspects,
     upload_run_results,
 )
+from automojo.pychestrate.client.signing_keys import refresh_signing_keys
 from automojo.pychestrate.client.state import ClientState
 from automojo.pychestrate.client.testbase_executor import (
     DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
@@ -313,16 +312,20 @@ def acknowledge_dispatch(client: PychestrateMtlsClient, run_id: str,
 
 
 def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
-                        pending: Any, signing_public_key: Any,
-                        signing_key_id: str,
+                        pending: Any,
                         aspects: DispatchConsumerAspects) -> bool:
     """
         Verifies, executes, and acknowledges a single pending dispatch.
 
         The flow is:
 
-            1. Verify the envelope's Ed25519 signature. On failure: log
-               loudly, ack with a rejection note, do NOT execute.
+            1. Verify the envelope's Ed25519 signature. The signing key is
+               resolved from the persisted JWKS-style signing-key set by
+               the envelope's ``signature_key_id``; an unknown key id
+               triggers a single refresh from
+               ``GET /api/v1/envelope-signing-keys`` before failing. On a
+               verification failure: log loudly, ack with a rejection note,
+               do NOT execute.
             2. On a verified envelope: shell out to testbase to run the
                job (resilient — never crashes the consumer), streaming live
                progress to the service for the lifetime of the run.
@@ -334,9 +337,6 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param state: The :class:`ClientState`.
         :param pending: The ``Pendingdispatch`` object.
-        :param signing_public_key: The trusted Ed25519 public key.
-        :param signing_key_id: The key id the trusted key was installed
-                               under.
         :param aspects: Behavior-shaping aspects.
 
         :returns: True when the dispatch was executed; False when it was
@@ -368,12 +368,16 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         rtnval = False
         return rtnval
 
-    verification: EnvelopeVerificationResult = verify_signed_envelope(
+    def _refresh_signing_keys() -> Any:
+        rtnval = refresh_signing_keys(client=client, state=state)
+        return rtnval
+
+    verification: EnvelopeVerificationResult = verify_dispatch_envelope(
+        state=state,
         envelope=envelope,
         signature_hex=signature_hex,
         signature_key_id=signature_key_id,
-        signing_public_key=signing_public_key,
-        signing_key_id=signing_key_id,
+        refresh_func=_refresh_signing_keys,
     )
 
     if not verification.valid:
@@ -463,9 +467,12 @@ def run_dispatch_consumer_loop(state: ClientState,
         acks. On a transport failure it logs and applies an exponential
         back-off (clamped at ``max_backoff_seconds``).
 
-        The consumer fails closed on the envelope signing public key: if
-        no key is installed it raises :class:`ConfigurationError` before
-        the loop starts rather than executing unverified envelopes.
+        The consumer fails closed on the envelope signing keys: each
+        dispatched envelope is verified against the persisted JWKS-style
+        signing-key set, resolved by the envelope's ``signature_key_id``.
+        An unknown key id triggers a single refresh from
+        ``GET /api/v1/envelope-signing-keys``; an envelope whose key still
+        cannot be resolved is rejected without execution.
 
         :param state: The :class:`ClientState` to drive the client from.
         :param aspects: Behavior-shaping aspects.
@@ -477,20 +484,6 @@ def run_dispatch_consumer_loop(state: ClientState,
     """
     client = build_client_from_state(state=state)
     client_id = state.read_client_id()
-
-    signing_public_key = load_signing_public_key(state=state)
-    config = state.read_config()
-    signing_key_id = config.get("envelope_signing_key_id", None)
-    if signing_key_id is None or len(signing_key_id) == 0:
-        errmsg_lines = [
-            "The pychestrate-client config does not record the envelope "
-            "signing key id.",
-            "    config: {}".format(state.config_path),
-            "Install the signing key with 'pychestrate-client "
-            "install-signing-key --key-id <id> ...'.",
-        ]
-        errmsg = os.linesep.join(errmsg_lines)
-        raise ConfigurationError(errmsg)
 
     sleep_func = aspects.sleep_func
     stop_flag = {"requested": False}
@@ -547,8 +540,6 @@ def run_dispatch_consumer_loop(state: ClientState,
                         client=client,
                         state=state,
                         pending=pending,
-                        signing_public_key=signing_public_key,
-                        signing_key_id=signing_key_id,
                         aspects=aspects,
                     )
 

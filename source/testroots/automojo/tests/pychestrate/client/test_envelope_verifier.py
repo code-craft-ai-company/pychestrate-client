@@ -18,13 +18,39 @@ from automojo.pychestrate.client.envelope_verifier import (
     REASON_SIGNATURE_MISMATCH,
     REASON_UNKNOWN_KEY,
     load_signing_public_key,
+    resolve_signing_public_key,
     serialize_envelope_canonical,
+    verify_dispatch_envelope,
     verify_signed_envelope,
 )
 from automojo.pychestrate.client.state import ClientState
 
 
 SIGNING_KEY_ID = "envelope-key-2026"
+
+
+def _public_pem(private_key):
+    """
+        Returns the PEM SubjectPublicKeyInfo text for a private key.
+    """
+    rtnval = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode("ascii")
+    return rtnval
+
+
+def _key_entry(private_key, key_id):
+    """
+        Returns a JWKS-style signing-key dict for a private key.
+    """
+    rtnval = {
+        "key_id": key_id,
+        "algorithm": "ed25519",
+        "public_key_pem": _public_pem(private_key),
+        "status": "active",
+    }
+    return rtnval
 
 
 def _sample_envelope():
@@ -217,4 +243,111 @@ def test_load_signing_public_key_round_trip():
             signing_key_id=SIGNING_KEY_ID,
         )
         testbase.assert_true(result.valid)
+    return
+
+
+def test_resolve_signing_public_key_from_persisted_set():
+    # The verifier resolves the key by key_id from the persisted
+    # JWKS-style signing-key set.
+    private_key = Ed25519PrivateKey.generate()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        state.write_envelope_signing_keys(
+            keys=[_key_entry(private_key, SIGNING_KEY_ID)])
+
+        resolved = resolve_signing_public_key(
+            state=state, key_id=SIGNING_KEY_ID)
+
+        envelope = _sample_envelope()
+        signature_hex = _sign(envelope, private_key)
+        result = verify_signed_envelope(
+            envelope=envelope, signature_hex=signature_hex,
+            signature_key_id=SIGNING_KEY_ID, signing_public_key=resolved,
+            signing_key_id=SIGNING_KEY_ID)
+        testbase.assert_true(result.valid)
+    return
+
+
+def test_resolve_signing_public_key_refreshes_on_unknown_key():
+    # An unknown key_id triggers a single refresh; once the refreshed set
+    # carries the key the resolution succeeds.
+    private_key = Ed25519PrivateKey.generate()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        # The persisted set is initially empty.
+        state.write_envelope_signing_keys(keys=[])
+
+        refresh_calls = {"count": 0}
+
+        def _refresh():
+            refresh_calls["count"] += 1
+            refreshed = [_key_entry(private_key, SIGNING_KEY_ID)]
+            state.write_envelope_signing_keys(keys=refreshed)
+            return refreshed
+
+        resolved = resolve_signing_public_key(
+            state=state, key_id=SIGNING_KEY_ID, refresh_func=_refresh)
+
+        testbase.assert_equal(refresh_calls["count"], 1)
+
+        envelope = _sample_envelope()
+        signature_hex = _sign(envelope, private_key)
+        result = verify_signed_envelope(
+            envelope=envelope, signature_hex=signature_hex,
+            signature_key_id=SIGNING_KEY_ID, signing_public_key=resolved,
+            signing_key_id=SIGNING_KEY_ID)
+        testbase.assert_true(result.valid)
+    return
+
+
+def test_verify_dispatch_envelope_unknown_key_after_refresh_is_rejected():
+    # When even a refresh cannot resolve the key the verifier fails
+    # closed with an unknown_key result.
+    private_key = Ed25519PrivateKey.generate()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        state.write_envelope_signing_keys(keys=[])
+
+        def _refresh():
+            # The refresh still does not carry the requested key.
+            state.write_envelope_signing_keys(keys=[])
+            return []
+
+        envelope = _sample_envelope()
+        signature_hex = _sign(envelope, private_key)
+
+        result = verify_dispatch_envelope(
+            state=state, envelope=envelope, signature_hex=signature_hex,
+            signature_key_id=SIGNING_KEY_ID, refresh_func=_refresh)
+
+        testbase.assert_false(result.valid)
+        testbase.assert_equal(result.reason, REASON_UNKNOWN_KEY)
+    return
+
+
+def test_verify_dispatch_envelope_valid_signature_verifies():
+    # End-to-end: resolve the key from the persisted set and verify.
+    private_key = Ed25519PrivateKey.generate()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        state.write_envelope_signing_keys(
+            keys=[_key_entry(private_key, SIGNING_KEY_ID)])
+
+        envelope = _sample_envelope()
+        signature_hex = _sign(envelope, private_key)
+
+        result = verify_dispatch_envelope(
+            state=state, envelope=envelope, signature_hex=signature_hex,
+            signature_key_id=SIGNING_KEY_ID)
+
+        testbase.assert_true(result.valid)
+        testbase.assert_equal(result.reason, REASON_OK)
     return

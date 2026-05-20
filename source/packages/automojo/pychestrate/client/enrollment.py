@@ -30,6 +30,7 @@ from cryptography.x509.oid import NameOID
 
 from automojo.errors.exceptions import BadParameterError, HTTPRequestError
 
+from automojo.pychestrate.client.signing_keys import persist_signing_keys_from_enrollment
 from automojo.pychestrate.client.state import ClientState
 
 
@@ -150,7 +151,8 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
             2. Generate a keypair + CSR.
             3. POST the CSR + bootstrap secret to ``/enrollment-tokens/redeem``.
             4. Persist the assigned ``client_id``, the signed certificate, the
-               service CA chain, and the private key into the state directory.
+               service CA chain, the private key, and the bundled envelope
+               signing-key set into the state directory.
 
         :param service_url: Full URL of the Pychestrate service
                             (e.g. ``https://pychestrate.example.com``).
@@ -244,6 +246,9 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
     state.write_service_ca(ca_pem=ca_chain_pem)
     state.write_client_id(client_id=client_id)
 
+    signing_key_count = persist_signing_keys_from_enrollment(
+        state=state, redeem_body=raw_body)
+
     config: Dict[str, Any] = {
         "service_url": service_url,
         "host": host,
@@ -262,5 +267,6 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
         "client_key_path": state.client_key_path,
         "service_ca_path": state.service_ca_path,
         "config_path": state.config_path,
+        "signing_key_count": signing_key_count,
     }
     return rtnval
