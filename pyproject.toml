@@ -1,0 +1,40 @@
+[tool.poetry]
+name = "pychestrate-client"
+description = "Pychestrate - pod-side runtime client (enroll, dispatch, testbase, results)"
+version = "0.0.1"
+authors = []
+readme = "README.rst"
+license = "LICENSE.txt"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX"
+]
+keywords = [
+    "python",
+    "pychestrate",
+    "client",
+    "automation"
+]
+packages = [{include="automojo", from="source/packages"}]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4.0"
+automojo-errors = { git = "https://github.com/automationmojo/automojo-errors.git", branch = "main" }
+automojo-credentials = { git = "https://github.com/automationmojo/automojo-credentials.git", branch = "main" }
+automojo-restclient-base = { git = "https://github.com/automationmojo/automojo-restclient-base.git", branch = "main" }
+automojo-testbase = { git = "https://github.com/automationmojo/automojo-testbase.git", branch = "main" }
+# NOTE: automojo-restclient-pychestrate is referenced as a local path dep until the
+# sibling repository is pushed to GitHub. Convert to a git source once the repo
+# exists at github.com/automationmojo/automojo-restclient-pychestrate.
+automojo-restclient-pychestrate = { path = "../automojo-restclient-pychestrate", develop = true }
+cryptography = ">=42.0.0"
+
+[tool.poetry.group.dev.dependencies]
+
+[tool.poetry.scripts]
+pychestrate-client = "automojo.pychestrate.client.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

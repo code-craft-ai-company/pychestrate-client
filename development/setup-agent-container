@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+# This script is used to setup containers used for Codex task environments when work with Codex via a web browser
+git config --global credential.helper store
+
+echo "https://git:$GITHUB_TOKEN@github.com" > ~/.git-credentials
+
+repository-setup/rehome-repository
+
+development/setup-environment

@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""
+    This script is designed to work within a 'python-package-template' based repository in order to
+    setup and configure the virtual environment to be easy to use withing a VSCode, Kiro, or other
+    similar IDE.
+"""
+from typing import Tuple
+
+import configparser
+import os
+import platform
+import subprocess
+import shutil
+import sys
+
+LNSEP = os.linesep
+
+PYTHON_CMD = "python3"
+if platform.system() == "Windows":
+    PYTHON_CMD = "python"
+
+SHELL_SCRIPT_PYTHON_ENV = '''
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+
+# Activate the virtual environment located alongside this script
+# shellcheck source=/dev/null
+. "$SCRIPT_DIR/activate"
+
+"$SCRIPT_DIR/python" "$@"
+'''
+
+POWERSHELL_SCRIPT_PYTHON_ENV = """
+#!/usr/bin/env pwsh
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+. (Join-Path $ScriptDir 'activate.ps1')
+& (Join-Path $ScriptDir 'python') @args
+"""
+
+# This powershell function is used on Windows to customize the virtual environment so that it will
+# always load the .env file from the repository folder, when the virtual environment is started up.
+
+POWERSHELL_VARIABLE_FILE_LOAD_FUNCTION = '''
+function Load-Variable-File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VariableFile
+    )
+
+    if (-not (Test-Path -Path $VariableFile)) {
+        throw "Variable file '$VariableFile' not found."
+    }
+
+    Get-Content -Path $VariableFile | ForEach-Object {
+        $line = $_.Trim()
+
+        if ([string]::IsNullOrWhiteSpace($line)) { return }
+        if ($line.StartsWith("#")) { return }
+        if ($line -notlike "*=*") { return }
+
+        $parts = $line -split '=', 2
+        $name  = $parts[0].Trim()
+        $value = $parts[1].Trim()
+
+        if ([string]::IsNullOrWhiteSpace($name)) { return }
+
+        if (
+            ($value.StartsWith('"') -and $value.EndsWith('"')) -or
+            ($value.StartsWith("'") -and $value.EndsWith("'"))
+        ) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+
+        [System.Environment]::SetEnvironmentVariable($name, $value, "Process")
+    }
+}
+'''
+
+
+def ensure_python_env_launcher(venv_bin_dir: str):
+    """Create the platform-specific python-env helper next to the venv binaries."""
+
+    if not venv_bin_dir:
+        return
+
+    os.makedirs(venv_bin_dir, exist_ok=True)
+
+    if platform.system() == "Windows":
+        script_name = "python-env.ps1"
+        script_body = POWERSHELL_SCRIPT_PYTHON_ENV.strip() + "\n"
+    else:
+        script_name = "python-env"
+        script_body = SHELL_SCRIPT_PYTHON_ENV.strip() + "\n"
+
+    script_path = os.path.join(venv_bin_dir, script_name)
+
+    with open(script_path, 'w', encoding='utf-8', newline='\n') as script_file:
+        script_file.write(script_body)
+
+    if platform.system() != "Windows":
+        os.chmod(script_path, 0o755)
+
+def customize_activation_script(activate_script: str, env_file: str, cli_alias: str, cli_entry_point_script: str):
+
+    global PYTHON_CMD
+
+    venv_bin = os.path.dirname(activate_script)
+    venv_python = os.path.join(venv_bin, PYTHON_CMD)
+
+    print("# ================ Development Environment Customizations ================")
+    print("")
+    if os.path.exists(activate_script):
+        with open(activate_script, 'a') as asf:
+            asf.write(LNSEP)
+            asf.write(f"if [ -f {env_file} ]{LNSEP}")
+            asf.write(f"then{LNSEP}")
+            asf.write(f"    set -a{LNSEP}")
+            asf.write(f"    source {env_file}{LNSEP}")
+            asf.write(f"    set +a{LNSEP}")
+            asf.write(f"fi{LNSEP}")
+            asf.write(LNSEP)
+            asf.write(LNSEP)
+
+            cli_alias_len = len(cli_alias)
+            cli_entry_point_script_len = len(cli_entry_point_script)
+            
+            # Check to see if we have a custom commandline to setup
+            if (cli_alias is not None) and (cli_alias_len > 0) and (cli_entry_point_script is not None) and (cli_entry_point_script_len > 0):
+
+                # We were given both cli_alias and cli_entry_point
+                asf.write(f"# Create an alias for the " + cli_alias + f" command{LNSEP}")
+                asf.write("function " + cli_alias + "() {" + LNSEP)
+                asf.write(f"    {venv_python} {cli_entry_point_script} $@ {LNSEP}")
+                asf.write("}" + LNSEP)
+                asf.write("export -f " + cli_alias)
+
+            elif ((cli_alias is not None) and (len(cli_alias) > 0)) or ((cli_entry_point_script is not None) and (len(cli_entry_point_script) > 0)):
+                errmsg = "To add a custom commandline, you must set both 'CUSTOM_CLI_ALIAS' and 'CUSTOM_CLI_ENTRY_SCRIPT'"
+                print(errmsg, file=sys.stderr)
+                exit(1)
+    
+    return
+
+def customize_activation_script_windows(activate_script: str, env_file: str, cli_alias: str, cli_entry_point_script: str):
+    """
+        Customize the Windows venv activation script (PowerShell: Activate.ps1) used by VSCode.
+    """
+
+    global PYTHON_CMD
+
+    venv_bin = os.path.dirname(activate_script)      # ...\\Scripts
+    venv_python = os.path.join(venv_bin, PYTHON_CMD) # ...\\Scripts\\python.exe
+
+    print("# ================ Development Environment Customizations ================")
+    print("")
+    if os.path.exists(activate_script):
+        with open(activate_script, 'a', encoding='utf-8') as asf:
+            # Write out the Powershell function that can load the .env file
+            asf.write(POWERSHELL_VARIABLE_FILE_LOAD_FUNCTION)
+            asf.write(LNSEP)
+
+            # Load environment file if present (assumed to be a PowerShell script)
+            asf.write(LNSEP)
+            asf.write(f'if (Test-Path "{env_file}"){LNSEP}')
+            asf.write("{" + LNSEP)
+            # Dot-source the env file so any $env:VAR changes persist in the session
+            asf.write(f'    Load-Variable-File -VariableFile "{env_file}" {LNSEP}')
+            asf.write("}" + LNSEP)
+            asf.write(LNSEP)
+            asf.write(LNSEP)
+
+            cli_alias_len = len(cli_alias) if cli_alias is not None else 0
+            cli_entry_point_script_len = len(cli_entry_point_script) if cli_entry_point_script is not None else 0
+
+            # Check to see if we have a custom commandline to setup
+            if (cli_alias is not None) and (cli_alias_len > 0) and \
+               (cli_entry_point_script is not None) and (cli_entry_point_script_len > 0):
+
+                # Create a PowerShell function that acts like your CLI command
+                asf.write(f"# Create a function for the {cli_alias} command{LNSEP}")
+                asf.write(f"")
+                asf.write(f"$REPOSITORY_DIRECTORY=$env:REPOSITORY_DIRECTORY")
+                asf.write(f"")
+                asf.write(f"function {cli_alias} {{" + LNSEP)
+                # Use & to invoke the Python executable, and @args to forward CLI args
+                asf.write(f'    & "{venv_python}" "{cli_entry_point_script}" @args{LNSEP}')
+                asf.write("}" + LNSEP)
+                asf.write(LNSEP)
+
+            elif ((cli_alias is not None) and (cli_alias_len > 0)) or \
+                 ((cli_entry_point_script is not None) and (cli_entry_point_script_len > 0)):
+                errmsg = ("To add a custom commandline, you must set both "
+                          "'CUSTOM_CLI_ALIAS' and 'CUSTOM_CLI_ENTRY_SCRIPT'")
+                print(errmsg, file=sys.stderr)
+                sys.exit(1)
+
+    return
+
+def normalize_variable_value(val: str):
+
+    val = val.strip()
+    
+    if (val.startswith('"') and val.endswith('"')) or  (val.startswith("'") and val.endswith("'")):
+
+        if len(val) > 2:
+            val = val[1: -1]
+        else:
+            val = ""
+
+    return val
+
+def run_cmd(command: str) -> Tuple[int, str, str]:
+
+    print("")
+    print(f"RUNNING COMMAND: {command}")
+    print("")
+
+    proc = subprocess.Popen(command, stdout=sys.stdout, stderr=sys.stderr, shell=True)
+    proc.communicate(timeout=300)
+    status = proc.returncode
+
+    return status
+
+
+def setup_environment_main():
+
+    THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+
+    print ("------------------------------------ VARIABLES ----------------------------------------")
+
+    REPOSITORY_DIR = os.path.abspath(os.path.join(THIS_DIR, ".."))
+    REPOSITORY_CONFIG_FILE = os.path.join(REPOSITORY_DIR, "repository-setup", "repository-config.ini")
+
+    print (f"THIS_DIR={THIS_DIR}")
+    print (f"REPOSITORY_DIR={REPOSITORY_DIR}")
+    print (f"REPOSITORY_CONFIG_FILE={REPOSITORY_CONFIG_FILE}")
+
+    if not os.path.exists(REPOSITORY_CONFIG_FILE):
+        errmsg_lines = [
+            "ERROR: Repository config file not found.",
+            "    location=$REPOSITORY_CONFIG_FILE"
+        ]
+        errmsg = os.linesep.join(errmsg_lines)
+        print(errmsg, file=sys.stderr)
+        exit(1)
+
+    CACHE_DIR = os.path.join(REPOSITORY_DIR, ".cache")
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+
+    INITIALIZED_FILE = os.path.join(CACHE_DIR, "initialized")
+    VIRTUAL_ENV_DIR = os.path.join(REPOSITORY_DIR, ".venv")
+    VIRTUAL_ENV_BIN_DIR = os.path.join(VIRTUAL_ENV_DIR, "bin")
+    if platform.system() == "Windows":
+        VIRTUAL_ENV_BIN_DIR = os.path.join(VIRTUAL_ENV_DIR, "Scripts")
+
+    ACTIVATE_SCRIPT = os.path.join(VIRTUAL_ENV_DIR, "bin", "activate")
+    if platform.system() == "Windows":
+        ACTIVATE_SCRIPT = os.path.join(VIRTUAL_ENV_DIR, "Scripts", "Activate.ps1")
+
+    ENV_FILE = os.path.join(REPOSITORY_DIR, ".env")
+    if not os.path.exists(ENV_FILE):
+        errmsg_lines = [
+            "ERROR: Development environment file not found. Did you run the 'repository-setup' script.",
+            f"    location=$ENV_FILE"
+        ]
+        errmsg = os.linesep.join(errmsg_lines)
+        print(errmsg, file=sys.stderr)
+        exit(1)
+
+    print(f"ENV_FILE={ENV_FILE}")
+
+    PYTHON_VERSION = ""
+    CUSTOM_CLI_ALIAS = ""
+    CUSTOM_CLI_ENTRY_SCRIPT =  ""
+
+    with open(ENV_FILE, 'r') as ef:
+        content_lines = ef.readlines()
+        for nxtline in content_lines:
+            nxtline = nxtline.strip()
+
+            if nxtline.startswith("PYTHON_VERSION="):
+                _, PYTHON_VERSION = nxtline.split("=", maxsplit=1)
+                PYTHON_VERSION = normalize_variable_value(PYTHON_VERSION)
+
+
+    if len(PYTHON_VERSION.strip()) == 0:
+        errmsg_lines = [
+            "ERROR: The 'PYTHON_VERSION' variable should be set in the development environment file. Did you rehome your repository?",
+            f"    location=$ENV_FILE"
+        ]
+        errmsg = os.linesep.join(errmsg_lines)
+        print(errmsg, file=sys.stderr)
+        exit(1)
+    
+
+    config = configparser.ConfigParser()
+    config.read(REPOSITORY_CONFIG_FILE)
+    if "DEFAULT" in config:
+        default_section = config["DEFAULT"]
+        
+        if "CUSTOM_CLI_ALIAS" in default_section:
+            CUSTOM_CLI_ALIAS = normalize_variable_value(default_section["CUSTOM_CLI_ALIAS"])
+
+        if "CUSTOM_CLI_ENTRY_SCRIPT" in default_section:
+            CUSTOM_CLI_ENTRY_SCRIPT = normalize_variable_value(default_section["CUSTOM_CLI_ENTRY_SCRIPT"])
+
+
+    EXTRA_POETRY_SETUP_FLAGS=""
+    if "EXTRA_POETRY_SETUP_FLAGS" in os.environ:
+        EXTRA_POETRY_SETUP_FLAGS = os.environ["EXTRA_POETRY_SETUP_FLAGS"]
+
+    print(f"CUSTOM_CLI_ALIAS={CUSTOM_CLI_ALIAS}")
+    print(f"CUSTOM_CLI_ENTRY_SCRIPT={CUSTOM_CLI_ENTRY_SCRIPT}")
+    print(f"PYTHON_VERSION={PYTHON_VERSION}")
+    print(f"VIRTUAL_ENV_DIR={VIRTUAL_ENV_DIR}")
+    print(f"VIRTUAL_ENV_BIN_DIR={VIRTUAL_ENV_BIN_DIR}")
+    print(f"EXTRA_POETRY_SETUP_FLAGS={EXTRA_POETRY_SETUP_FLAGS}")
+
+    print("---------------------------------------------------------------------------------------")
+
+    # -------------------------------------------------------------------------------------------
+    #                                 Perform Reset if Required
+    # -------------------------------------------------------------------------------------------
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        if os.path.exists(VIRTUAL_ENV_DIR):
+            shutil.rmtree(VIRTUAL_ENV_DIR, ignore_errors=False)
+        if os.path.exists(INITIALIZED_FILE):
+            os.remove(INITIALIZED_FILE)
+
+    # -------------------------------------------------------------------------------------------
+    #                                 Create the Virtual Environment
+    # -------------------------------------------------------------------------------------------
+    print("")
+    print("")
+    print("---------------------------- VIRTUAL ENVIRONMENT CREATION -----------------------------")
+    if not os.path.exists(INITIALIZED_FILE):
+
+        prev_dir = os.curdir
+
+        os.chdir(REPOSITORY_DIR)
+
+        if not os.path.exists(ACTIVATE_SCRIPT):
+            
+            command = f"poetry env use {PYTHON_VERSION}"
+            if platform.system() == "Windows":
+                command = f"poetry env use python"
+
+            status = run_cmd(command)
+            if status != 0:
+                errmsg_lines = [
+                    "Error attempting to select the python version for our virtual environment",
+                    f"    COMMAND: {command}"
+                ]
+                errmsg = os.linesep.join(errmsg_lines)
+                print(errmsg, file=sys.stderr)
+                exit(1)
+
+            command = f"poetry install --no-root {EXTRA_POETRY_SETUP_FLAGS}"
+            status = run_cmd(command)
+            if status != 0:
+                errmsg_lines = [
+                    "Error attempting install the poetry virtual environment depedencies.",
+                    f"    COMMAND: {command}"
+                ]
+                errmsg = os.linesep.join(errmsg_lines)
+                print(errmsg, file=sys.stderr)
+                exit(1)
+        
+        os.chdir(prev_dir)
+
+        if platform.system() != "Windows":
+            customize_activation_script(ACTIVATE_SCRIPT, ENV_FILE, CUSTOM_CLI_ALIAS, CUSTOM_CLI_ENTRY_SCRIPT)
+        else:
+            customize_activation_script_windows(ACTIVATE_SCRIPT, ENV_FILE, CUSTOM_CLI_ALIAS, CUSTOM_CLI_ENTRY_SCRIPT)
+
+        with open(INITIALIZED_FILE, 'w+') as initf:
+            initf.write("TRUE")
+            initf.write(LNSEP)
+
+    else:
+        print("")
+        print("Virtual environment already intialized...")
+        print("")
+
+    print("---------------------------------------------------------------------------------------")
+
+    ensure_python_env_launcher(VIRTUAL_ENV_BIN_DIR)
+
+    return
+
+
+if __name__ == "__main__":
+    setup_environment_main()
