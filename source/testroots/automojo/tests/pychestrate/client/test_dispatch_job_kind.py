@@ -2,11 +2,12 @@
     TestBase tests for the pychestrate-client dispatch-consumer
     ``job_kind`` branching: a ``test`` envelope routes to the testbase
     executor, a ``build`` envelope routes to the build executor, a
-    ``provision`` envelope is acked with a rejection note (no crash), and a
+    ``provision`` envelope routes to the provision executor, and a
     missing / unrecognized ``job_kind`` defaults to ``test``.
 
-    The REST client, both executors, and both uploaders are mocked; no real
-    network traffic, testbase run, or build is performed.
+    The REST client, all three executors, and all three uploaders are
+    mocked; no real network traffic, testbase run, build, or provisioning
+    is performed.
 """
 
 import os
@@ -25,6 +26,10 @@ from automojo.pychestrate.client.dispatch_consumer import (
 from automojo.pychestrate.client.build_executor import (
     BUILD_STATUS_SUCCEEDED,
     BuildRunOutcome,
+)
+from automojo.pychestrate.client.provision_executor import (
+    PROVISION_STATUS_SUCCEEDED,
+    ProvisionRunOutcome,
 )
 from automojo.pychestrate.client.envelope_verifier import (
     serialize_envelope_canonical,
@@ -167,8 +172,10 @@ class _Routing:
     def __init__(self):
         self.test_runs = 0
         self.build_runs = 0
+        self.provision_runs = 0
         self.test_uploads = 0
         self.build_uploads = 0
+        self.provision_uploads = 0
         return
 
 
@@ -180,8 +187,10 @@ def _install_fakes(routing):
     originals = {
         "execute_job_envelope": dc_mod.execute_job_envelope,
         "execute_build_envelope": dc_mod.execute_build_envelope,
+        "execute_provision_envelope": dc_mod.execute_provision_envelope,
         "upload_run_results": dc_mod.upload_run_results,
         "upload_build_results": dc_mod.upload_build_results,
+        "upload_provision_results": dc_mod.upload_provision_results,
     }
 
     def _fake_test_execute(*, state, envelope, local_run_id, aspects,
@@ -201,6 +210,16 @@ def _install_fakes(routing):
             command=["make", "all"], runner_kind="makefile", detail="ok")
         return rtnval
 
+    def _fake_provision_execute(*, state, envelope, local_run_id, aspects,
+                                progress_reporter=None):
+        routing.provision_runs += 1
+        rtnval = ProvisionRunOutcome(
+            status=PROVISION_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/provision-out", work_dir="/tmp/provision-work",
+            command=["terraform", "apply"], driver_name="terraform",
+            action="apply", detail="ok")
+        return rtnval
+
     def _fake_test_upload(*, client, state, envelope, result_dir,
                           run_succeeded, aspects):
         routing.test_uploads += 1
@@ -217,18 +236,30 @@ def _install_fakes(routing):
             tree_uploaded=True, file_count=2, detail="ok")
         return rtnval
 
+    def _fake_provision_upload(*, client, state, envelope, result_dir,
+                               run_succeeded, aspects):
+        routing.provision_uploads += 1
+        rtnval = ResultUploadOutcome(
+            status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,
+            tree_uploaded=True, file_count=4, detail="ok")
+        return rtnval
+
     dc_mod.execute_job_envelope = _fake_test_execute
     dc_mod.execute_build_envelope = _fake_build_execute
+    dc_mod.execute_provision_envelope = _fake_provision_execute
     dc_mod.upload_run_results = _fake_test_upload
     dc_mod.upload_build_results = _fake_build_upload
+    dc_mod.upload_provision_results = _fake_provision_upload
     return originals
 
 
 def _restore_fakes(originals):
     dc_mod.execute_job_envelope = originals["execute_job_envelope"]
     dc_mod.execute_build_envelope = originals["execute_build_envelope"]
+    dc_mod.execute_provision_envelope = originals["execute_provision_envelope"]
     dc_mod.upload_run_results = originals["upload_run_results"]
     dc_mod.upload_build_results = originals["upload_build_results"]
+    dc_mod.upload_provision_results = originals["upload_provision_results"]
     return
 
 
@@ -293,10 +324,17 @@ def test_job_kind_build_routes_to_build_executor():
     return
 
 
-def test_job_kind_provision_acked_with_rejection_no_crash():
+def test_job_kind_provision_routes_to_provision_executor():
     signing_key = Ed25519PrivateKey.generate()
     envelope = _base_envelope()
     envelope["job_kind"] = "provision"
+    envelope["params"] = {
+        "environment_id": "env-1",
+        "action": "apply",
+        "driver_name": "terraform",
+        "driver_inputs": {"working_directory": "/opt/infra"},
+        "inputs_canonical_sha256": "abc123",
+    }
     pending = _signed_pending(envelope, signing_key)
 
     routing = _Routing()
@@ -307,20 +345,20 @@ def test_job_kind_provision_acked_with_rejection_no_crash():
                 os.path.join(tmpdir, "state"), signing_key)
             client = _FakeRestClient()
 
-            # Must NOT raise -- a provision job is rejected, not crashed.
             executed = handle_one_dispatch(
                 client=client, state=state, pending=pending,
                 aspects=DispatchConsumerAspects())
 
-            testbase.assert_false(executed)
+            testbase.assert_true(executed)
+            testbase.assert_equal(routing.provision_runs, 1)
             testbase.assert_equal(routing.test_runs, 0)
             testbase.assert_equal(routing.build_runs, 0)
+            testbase.assert_equal(routing.provision_uploads, 1)
 
-            # The dispatch is still acked, with a rejection note.
+            # The dispatch is acked with an acceptance note.
             testbase.assert_equal(len(client.dispatch.acks), 1)
             _, ack_body = client.dispatch.acks[0]
-            testbase.assert_true("REJECTED" in ack_body.notes)
-            testbase.assert_true("provision" in ack_body.notes)
+            testbase.assert_true("ACCEPTED" in ack_body.notes)
     finally:
         _restore_fakes(originals)
     return
