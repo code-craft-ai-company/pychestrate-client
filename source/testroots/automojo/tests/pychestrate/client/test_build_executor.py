@@ -147,7 +147,7 @@ def test_build_make_command_rejects_missing_targets():
     return
 
 
-def test_acquire_source_clones_and_checks_out_git():
+def test_acquire_source_falls_back_to_runner_inputs_git_url():
     recorder = _RunRecorder()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -155,10 +155,13 @@ def test_acquire_source_clones_and_checks_out_git():
         os.makedirs(source_dir)
 
         aspects = BuildExecutorAspects(run_func=recorder)
-        build_spec = _sample_build_envelope()["params"]
+        # A pre-#241 envelope carries no structured 'source' block.
+        envelope = _sample_build_envelope()
+        build_spec = envelope["params"]
 
         result = acquire_source(
-            build_spec=build_spec, source_dir=source_dir, aspects=aspects)
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
 
         testbase.assert_true(result.acquired)
         # One clone + one checkout call.
@@ -170,6 +173,132 @@ def test_acquire_source_clones_and_checks_out_git():
         checkout_call = recorder.calls[1]["command"]
         testbase.assert_equal(checkout_call[1], "checkout")
         testbase.assert_true("v1.2.3" in checkout_call)
+    return
+
+
+def test_acquire_source_prefers_structured_source_block():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_dir = os.path.join(tmpdir, "source")
+        os.makedirs(source_dir)
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        # The structured 'source' block must win over runner_inputs.git_url.
+        envelope["source"] = {
+            "kind": "git",
+            "url": "https://example.com/structured-repo.git",
+            "ref": "release-9.9",
+            "integration_id": "66666666-6666-6666-6666-666666666666",
+            "credentials_ref": "",
+        }
+        build_spec = envelope["params"]
+
+        result = acquire_source(
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
+
+        testbase.assert_true(result.acquired)
+        testbase.assert_equal(len(recorder.calls), 2)
+        clone_call = recorder.calls[0]["command"]
+        testbase.assert_equal(clone_call[1], "clone")
+        # The structured source url is cloned, NOT the legacy git_url.
+        testbase.assert_true(
+            "https://example.com/structured-repo.git" in clone_call)
+        testbase.assert_false(
+            "https://example.com/repo.git" in clone_call)
+        checkout_call = recorder.calls[1]["command"]
+        testbase.assert_equal(checkout_call[1], "checkout")
+        testbase.assert_true("release-9.9" in checkout_call)
+    return
+
+
+def test_acquire_source_structured_block_without_ref_skips_checkout():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_dir = os.path.join(tmpdir, "source")
+        os.makedirs(source_dir)
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        envelope["source"] = {
+            "kind": "git",
+            "url": "https://example.com/structured-repo.git",
+            "ref": "",
+            "integration_id": "",
+            "credentials_ref": "",
+        }
+        build_spec = envelope["params"]
+
+        result = acquire_source(
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
+
+        testbase.assert_true(result.acquired)
+        # Only a clone -- no ref means no checkout.
+        testbase.assert_equal(len(recorder.calls), 1)
+        testbase.assert_equal(recorder.calls[0]["command"][1], "clone")
+    return
+
+
+def test_acquire_source_structured_block_private_repo_not_supported():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_dir = os.path.join(tmpdir, "source")
+        os.makedirs(source_dir)
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        # A non-empty credentials_ref references a private repository.
+        envelope["source"] = {
+            "kind": "git",
+            "url": "https://example.com/private-repo.git",
+            "ref": "main",
+            "integration_id": "",
+            "credentials_ref": "GIT_CLONE_TOKEN",
+        }
+        build_spec = envelope["params"]
+
+        result = acquire_source(
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
+
+        # Private-repo credentials are not yet supported -- non-acquired.
+        testbase.assert_false(result.acquired)
+        # No clone attempted for an unsupported private repo.
+        testbase.assert_equal(len(recorder.calls), 0)
+        testbase.assert_true(
+            "credentials_ref" in str(result.detail))
+    return
+
+
+def test_acquire_source_structured_block_rejects_non_git_kind():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        source_dir = os.path.join(tmpdir, "source")
+        os.makedirs(source_dir)
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        envelope["source"] = {
+            "kind": "mercurial",
+            "url": "https://example.com/repo",
+            "ref": "tip",
+            "integration_id": "",
+            "credentials_ref": "",
+        }
+        build_spec = envelope["params"]
+
+        result = acquire_source(
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
+
+        testbase.assert_false(result.acquired)
+        testbase.assert_equal(len(recorder.calls), 0)
     return
 
 
@@ -190,9 +319,11 @@ def test_acquire_source_uses_present_local_source_dir():
                 "source_dir": local_source,
             },
         }
+        envelope = {"params": build_spec}
 
         result = acquire_source(
-            build_spec=build_spec, source_dir=work_dir, aspects=aspects)
+            envelope=envelope, build_spec=build_spec, source_dir=work_dir,
+            aspects=aspects)
 
         testbase.assert_true(result.acquired)
         testbase.assert_equal(result.source_dir, local_source)
@@ -209,10 +340,12 @@ def test_acquire_source_fails_when_clone_fails():
         os.makedirs(source_dir)
 
         aspects = BuildExecutorAspects(run_func=recorder)
-        build_spec = _sample_build_envelope()["params"]
+        envelope = _sample_build_envelope()
+        build_spec = envelope["params"]
 
         result = acquire_source(
-            build_spec=build_spec, source_dir=source_dir, aspects=aspects)
+            envelope=envelope, build_spec=build_spec, source_dir=source_dir,
+            aspects=aspects)
 
         testbase.assert_false(result.acquired)
     return
@@ -252,6 +385,72 @@ def test_execute_build_envelope_runs_make_with_env_and_workdir():
         record_path = os.path.join(
             build_dirs["record_dir"], "build-record.json")
         testbase.assert_true(os.path.isfile(record_path))
+    return
+
+
+def test_execute_build_envelope_uses_structured_source_block():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        envelope["source"] = {
+            "kind": "git",
+            "url": "https://example.com/structured-repo.git",
+            "ref": "v2.0.0",
+            "integration_id": "66666666-6666-6666-6666-666666666666",
+            "credentials_ref": "",
+        }
+
+        outcome = execute_build_envelope(
+            state=state, envelope=envelope, local_run_id="local-build-src",
+            aspects=aspects)
+
+        testbase.assert_true(outcome.succeeded)
+        clone_calls = [
+            call for call in recorder.calls
+            if os.path.basename(call["command"][0]) == "git"
+            and call["command"][1] == "clone"
+        ]
+        testbase.assert_equal(len(clone_calls), 1)
+        testbase.assert_true(
+            "https://example.com/structured-repo.git"
+            in clone_calls[0]["command"])
+    return
+
+
+def test_execute_build_envelope_fails_on_private_repo_source():
+    recorder = _RunRecorder()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+
+        aspects = BuildExecutorAspects(run_func=recorder)
+        envelope = _sample_build_envelope()
+        envelope["source"] = {
+            "kind": "git",
+            "url": "https://example.com/private-repo.git",
+            "ref": "main",
+            "integration_id": "",
+            "credentials_ref": "GIT_CLONE_TOKEN",
+        }
+
+        # A private-repo source is a failed build, not a crash.
+        outcome = execute_build_envelope(
+            state=state, envelope=envelope, local_run_id="local-build-priv",
+            aspects=aspects)
+
+        testbase.assert_false(outcome.succeeded)
+        testbase.assert_equal(outcome.status, BUILD_STATUS_FAILED)
+        make_calls = [
+            call for call in recorder.calls
+            if os.path.basename(call["command"][0]) == "make"
+        ]
+        testbase.assert_equal(len(make_calls), 0)
     return
 
 

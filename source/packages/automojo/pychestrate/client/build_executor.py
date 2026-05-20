@@ -17,14 +17,31 @@
                    ``<state>/builds/<run_id>/``.
 
                    Source acquisition -- the build needs a source tree to
-                   run ``make`` against. The build envelope's
-                   ``runner_inputs`` may carry a git reference
-                   (``git_url`` + optional ``git_ref``); when present the
-                   executor ``git clone``/``git checkout`` into the build
-                   work directory. Richer source-integration handling
-                   (the ``6-source-integrations`` webhook / artifact-pull
-                   flow) is a follow-up -- M5 covers only the git case and
-                   the already-present local-path case (``source_dir``).
+                   run ``make`` against. ``pychestrate-service`` PR #241
+                   added a first-class ``source`` block to the build job
+                   envelope -- a ``JobSourceRef`` carrying
+                   ``{ kind, url, ref, integration_id, credentials_ref }``.
+                   The executor prefers the structured ``envelope.source``
+                   block when present: it uses ``source.url`` +
+                   ``source.ref`` for the ``git clone``/``git checkout``.
+                   When ``source`` is absent (pre-#241 envelopes) the
+                   executor falls back to the legacy
+                   ``runner_inputs.git_url`` + optional ``git_ref``
+                   convention, and finally to an already-present local
+                   path (``runner_inputs.source_dir``).
+
+                   ``credentials_ref`` -- the structured ``source`` block
+                   may carry a symbolic ``credentials_ref`` (NOT the
+                   credential value) the client agent would resolve to
+                   clone a private repository. The client has no
+                   secret-fetch path today (the M4 signing-key delivery
+                   work fetches only public Ed25519 keys; there is no
+                   ``secrets`` REST group), so this milestone scopes
+                   source acquisition to public repositories: a non-empty
+                   ``credentials_ref`` is logged with a clear
+                   "private-repo credentials not yet supported" message
+                   and treated as a failed acquisition. Wiring a
+                   credential-resolution path is a documented follow-up.
 
                    The executor never crashes the client: a missing
                    ``make``/``git`` binary, a clone failure, a timeout, or a
@@ -69,6 +86,11 @@ DEFAULT_CLONE_TIMEOUT_SECONDS = 1800.0
 #: The only runner kind M5 supports (mirrors the server's
 #: ``makefile_runner_kind.MAKEFILE_RUNNER_KIND_NAME``).
 MAKEFILE_RUNNER_KIND = "makefile"
+
+#: The only ``source`` block kind the executor acquires today (mirrors
+#: the server's ``jobs.envelope.schema.SOURCE_KIND_GIT``). Non-git
+#: source kinds are a documented follow-up.
+SOURCE_KIND_GIT = "git"
 
 #: Local build-run-record status codes.
 BUILD_STATUS_SUCCEEDED = "succeeded"
@@ -329,6 +351,43 @@ def _extract_build_env(build_spec: Dict[str, Any]) -> Dict[str, str]:
     return rtnval
 
 
+def _extract_source_ref(envelope: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+        Pulls the structured ``source`` block off a verified
+        ``job_kind=build`` envelope.
+
+        ``pychestrate-service`` PR #241 added the first-class ``source``
+        block (a ``JobSourceRef``: ``kind``, ``url``, ``ref``,
+        ``integration_id``, ``credentials_ref``) to the build envelope.
+        The block is optional -- envelopes minted before #241 (and test /
+        provision envelopes) carry no ``source`` -- so this helper returns
+        ``None`` when the block is absent or malformed and the caller
+        falls back to the legacy ``runner_inputs.git_url`` convention.
+
+        :param envelope: The verified envelope dict.
+
+        :returns: The ``source`` block map, or ``None`` when absent or
+                  malformed.
+    """
+    raw_source = envelope.get("source", None)
+    if raw_source is None:
+        rtnval: Optional[Dict[str, Any]] = None
+        return rtnval
+
+    if not isinstance(raw_source, dict):
+        logger.warning(
+            "pychestrate-client: the build envelope's 'source' block is "
+            "not an object (%s); ignoring it and falling back to the "
+            "legacy runner_inputs.git_url convention.",
+            type(raw_source).__name__,
+        )
+        rtnval = None
+        return rtnval
+
+    rtnval = raw_source
+    return rtnval
+
+
 def resolve_build_dirs(state: ClientState, run_id: str) -> Dict[str, str]:
     """
         Builds and creates the per-build directories under the client
@@ -396,30 +455,120 @@ class SourceAcquisitionResult:
         return self._detail
 
 
-def acquire_source(*, build_spec: Dict[str, Any], source_dir: str,
+def _acquire_structured_source(*, source_ref: Dict[str, Any],
+                               source_dir: str,
+                               aspects: BuildExecutorAspects
+                               ) -> SourceAcquisitionResult:
+    """
+        Acquires the build's source tree from the envelope's structured
+        ``source`` block (a ``JobSourceRef``).
+
+        Only the ``git`` source kind is acquired today. A ``source`` block
+        carrying a non-empty ``credentials_ref`` references a private
+        repository; the client has no secret-fetch path yet (a documented
+        follow-up), so a non-empty ``credentials_ref`` is treated as a
+        non-acquired result with a clear log message.
+
+        :param source_ref: The envelope's ``source`` block map.
+        :param source_dir: The build working directory the source lands in.
+        :param aspects: Behavior-shaping aspects.
+
+        :returns: A :class:`SourceAcquisitionResult`.
+    """
+    source_kind = str(source_ref.get("kind", "")).strip()
+    if len(source_kind) == 0:
+        source_kind = SOURCE_KIND_GIT
+
+    if source_kind != SOURCE_KIND_GIT:
+        detail = (
+            "The build envelope's structured 'source' block declares an "
+            "unsupported source kind {!r}; only the 'git' kind is "
+            "acquired today. Non-git source kinds are a follow-up.".format(
+                source_kind)
+        )
+        logger.error("pychestrate-client: %s", detail)
+        rtnval = SourceAcquisitionResult(
+            acquired=False, source_dir=source_dir, detail=detail)
+        return rtnval
+
+    source_url = str(source_ref.get("url", "")).strip()
+    if len(source_url) == 0:
+        detail = (
+            "The build envelope's structured 'source' block carries an "
+            "empty 'url'; there is nothing to clone."
+        )
+        logger.error("pychestrate-client: %s", detail)
+        rtnval = SourceAcquisitionResult(
+            acquired=False, source_dir=source_dir, detail=detail)
+        return rtnval
+
+    credentials_ref = str(source_ref.get("credentials_ref", "")).strip()
+    if len(credentials_ref) > 0:
+        detail = (
+            "The build envelope's structured 'source' block carries a "
+            "non-empty 'credentials_ref' ({!r}) -- it references a "
+            "private repository. The pychestrate-client has no "
+            "credential-resolution path yet, so private-repo source "
+            "credentials are not yet supported; this acquisition is "
+            "scoped to public repositories. Wiring a credential-fetch "
+            "path is a documented follow-up.".format(credentials_ref)
+        )
+        logger.error("pychestrate-client: %s", detail)
+        rtnval = SourceAcquisitionResult(
+            acquired=False, source_dir=source_dir, detail=detail)
+        return rtnval
+
+    source_kind_ref = source_ref.get("ref", None)
+    git_ref = None
+    if source_kind_ref is not None and len(str(source_kind_ref)) > 0:
+        git_ref = str(source_kind_ref)
+
+    logger.info(
+        "pychestrate-client: acquiring build source from the structured "
+        "envelope 'source' block (url=%s, ref=%s).", source_url, git_ref,
+    )
+
+    rtnval = _acquire_git_source(
+        git_url=source_url, git_ref=git_ref, source_dir=source_dir,
+        aspects=aspects)
+    return rtnval
+
+
+def acquire_source(*, envelope: Dict[str, Any], build_spec: Dict[str, Any],
+                    source_dir: str,
                     aspects: BuildExecutorAspects =
                     DEFAULT_BUILD_EXECUTOR_ASPECTS
                     ) -> SourceAcquisitionResult:
     """
         Acquires the build's source tree into the build working directory.
 
-        M5 supports two source shapes carried on the build envelope's
-        ``runner_inputs``:
+        The executor resolves the source in this precedence order:
 
-            1. ``source_dir`` -- an already-present local path on the pod.
-               The build runs directly in that directory (no copy).
-            2. ``git_url`` (+ optional ``git_ref``) -- the executor
-               ``git clone``s the repository into the build working
-               directory and, when a ref is supplied, ``git checkout``s it.
+            1. ``envelope.source`` -- the first-class ``source`` block
+               (a ``JobSourceRef``) added by ``pychestrate-service``
+               PR #241. When present the executor uses ``source.url`` +
+               ``source.ref`` for the ``git clone``/``git checkout``.
+               Only the ``git`` source kind is acquired; a non-empty
+               ``source.credentials_ref`` (a private repository) is not
+               yet supported and yields a non-acquired result.
+            2. ``runner_inputs.git_url`` (+ optional ``git_ref``) -- the
+               legacy ad-hoc convention, used only when the envelope
+               carries no structured ``source`` block (pre-#241
+               envelopes). The executor ``git clone``s the repository
+               into the build working directory and, when a ref is
+               supplied, ``git checkout``s it.
+            3. ``runner_inputs.source_dir`` -- an already-present local
+               path on the pod. The build runs directly in that directory
+               (no copy).
 
-        When neither key is present the envelope's working directory is
-        used as-is and the caller decides whether a bare ``make`` there is
-        meaningful. Richer source-integration handling (the
-        ``6-source-integrations`` flow) is a documented follow-up.
+        When none of these is present the caller decides whether a bare
+        ``make`` in the empty working directory is meaningful.
 
         The function is resilient: a clone/checkout failure is captured as
         a non-acquired :class:`SourceAcquisitionResult` rather than raised.
 
+        :param envelope: The verified envelope dict (carries the optional
+                         structured ``source`` block).
         :param build_spec: The envelope ``params`` build-spec map.
         :param source_dir: The build working directory the source lands in.
         :param aspects: Behavior-shaping aspects.
@@ -429,6 +578,26 @@ def acquire_source(*, build_spec: Dict[str, Any], source_dir: str,
     runner_inputs = build_spec.get("runner_inputs", {})
     if not isinstance(runner_inputs, dict):
         runner_inputs = {}
+
+    source_ref = _extract_source_ref(envelope=envelope)
+    if source_ref is not None:
+        rtnval = _acquire_structured_source(
+            source_ref=source_ref, source_dir=source_dir, aspects=aspects)
+        return rtnval
+
+    git_url = runner_inputs.get("git_url", None)
+    if git_url is not None and len(str(git_url)) > 0:
+        logger.info(
+            "pychestrate-client: the build envelope carries no structured "
+            "'source' block; falling back to the legacy "
+            "runner_inputs.git_url convention.",
+        )
+        rtnval = _acquire_git_source(
+            git_url=str(git_url),
+            git_ref=runner_inputs.get("git_ref", None),
+            source_dir=source_dir,
+            aspects=aspects)
+        return rtnval
 
     local_source = runner_inputs.get("source_dir", None)
     if local_source is not None and len(str(local_source)) > 0:
@@ -452,20 +621,11 @@ def acquire_source(*, build_spec: Dict[str, Any], source_dir: str,
             acquired=False, source_dir=source_dir, detail=detail)
         return rtnval
 
-    git_url = runner_inputs.get("git_url", None)
-    if git_url is not None and len(str(git_url)) > 0:
-        rtnval = _acquire_git_source(
-            git_url=str(git_url),
-            git_ref=runner_inputs.get("git_ref", None),
-            source_dir=source_dir,
-            aspects=aspects)
-        return rtnval
-
     detail = (
-        "The build envelope carries neither a 'git_url' nor a local "
-        "'source_dir' in its runner_inputs; M5 source acquisition has "
-        "nothing to fetch. Richer source-integration handling is a "
-        "follow-up."
+        "The build envelope carries no structured 'source' block, no "
+        "'runner_inputs.git_url', and no local 'runner_inputs.source_dir'; "
+        "source acquisition has nothing to fetch. Richer "
+        "source-integration handling is a follow-up."
     )
     logger.warning("pychestrate-client: %s", detail)
     rtnval = SourceAcquisitionResult(
@@ -767,7 +927,8 @@ def execute_build_envelope(*, state: ClientState, envelope: Dict[str, Any],
         return rtnval
 
     acquisition = acquire_source(
-        build_spec=build_spec, source_dir=work_dir, aspects=aspects)
+        envelope=envelope, build_spec=build_spec, source_dir=work_dir,
+        aspects=aspects)
     if not acquisition.acquired:
         detail = "Build source acquisition failed: {}".format(
             acquisition.detail)
