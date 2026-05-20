@@ -8,8 +8,16 @@
                    ``testbase testing run ...`` command via :mod:`subprocess`,
                    captures the exit code and the output directory, and
                    records a local run record under the client state dir.
-                   It does NOT push progress or results upstream — that is
-                   M3. The executor never crashes the client: a missing
+
+                   M3 scope: the executor accepts an optional
+                   :class:`automojo.pychestrate.client.progress_reporter.ProgressReporter`.
+                   When one is supplied it is started immediately before the
+                   testbase subprocess launches and stopped once the process
+                   exits, so live progress streams to the service for the
+                   lifetime of the run. The result-tree upload itself is
+                   driven by the dispatch consumer after the executor returns.
+
+                   The executor never crashes the client: a missing
                    ``testbase`` binary or a non-zero exit is recorded as a
                    failed local run and surfaced to the caller.
 
@@ -335,10 +343,15 @@ def build_testbase_command(*, envelope: Dict[str, Any], output_dir: str,
     return rtnval
 
 
-def _resolve_output_dir(state: ClientState, run_id: str) -> str:
+def resolve_run_output_dir(state: ClientState, run_id: str) -> str:
     """
         Builds and creates the per-run output directory under the client
         state runs directory.
+
+        The directory is deterministic for a given ``(state, run_id)`` pair
+        so a caller (the dispatch consumer) can resolve the testbase output
+        directory ahead of the run -- e.g. to point a progress reporter at
+        the JSOS stream file the run will write into it.
 
         :param state: The :class:`ClientState`.
         :param run_id: The server-assigned run UUID.
@@ -391,7 +404,8 @@ def write_local_run_record(state: ClientState, run_id: str, local_run_id: str,
 def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
                          local_run_id: str,
                          aspects: TestbaseExecutorAspects =
-                         DEFAULT_TESTBASE_EXECUTOR_ASPECTS
+                         DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
+                         progress_reporter: Optional[Any] = None
                          ) -> TestbaseRunOutcome:
     """
         Executes a verified job envelope by shelling out to
@@ -402,17 +416,26 @@ def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
         failed :class:`TestbaseRunOutcome` rather than raised — the
         client process must not crash on a bad dispatch.
 
+        When a ``progress_reporter`` is supplied (an
+        :class:`automojo.pychestrate.client.progress_reporter.ProgressReporter`)
+        it is started immediately before the testbase subprocess launches
+        and stopped once the process exits, so progress is streamed live to
+        the service. Progress streaming is best-effort and never affects the
+        run outcome.
+
         :param state: The :class:`ClientState` used to place run output.
         :param envelope: The verified envelope dict.
         :param local_run_id: The client-minted local run identifier.
         :param aspects: Behavior-shaping aspects.
+        :param progress_reporter: Optional progress reporter started around
+                                  the testbase subprocess.
 
         :returns: A :class:`TestbaseRunOutcome`.
     """
     run_id = str(envelope.get("run_id", ""))
     envelope_id = str(envelope.get("envelope_id", ""))
 
-    output_dir = _resolve_output_dir(state=state, run_id=run_id)
+    output_dir = resolve_run_output_dir(state=state, run_id=run_id)
 
     try:
         command = build_testbase_command(
@@ -439,6 +462,17 @@ def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
     exit_code: Optional[int] = None
     status = RUN_STATUS_FAILED
     detail: Optional[str] = None
+
+    if progress_reporter is not None:
+        try:
+            progress_reporter.start()
+        except Exception as startt_err:
+            # Progress is best-effort; a reporter start failure must not
+            # prevent the run from executing.
+            logger.warning(
+                "pychestrate-client: progress reporter failed to start for "
+                "run_id=%s (run continues): %s", run_id, startt_err,
+            )
 
     try:
         completed = aspects.run_func(
@@ -470,6 +504,15 @@ def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
         detail = "The testbase invocation raised an unexpected error: {}".format(
             runerr)
         logger.error("pychestrate-client: %s", detail)
+    finally:
+        if progress_reporter is not None:
+            try:
+                progress_reporter.stop()
+            except Exception as stop_err:
+                logger.warning(
+                    "pychestrate-client: progress reporter failed to stop "
+                    "cleanly for run_id=%s: %s", run_id, stop_err,
+                )
 
     outcome = TestbaseRunOutcome(
         status=status, exit_code=exit_code, output_dir=output_dir,
