@@ -6,14 +6,10 @@
                    over mTLS so the service registry can keep ``last_seen``
                    current.
 
-                   NOTE: the codegen'd ``automojo.pychestrate.rest.client.groups.
-                   clients`` module does NOT yet expose a ``clients_heartbeat``
-                   method (the codegen source spec is older than the service
-                   spec). Until the REST client is regenerated, this module
-                   performs the heartbeat by directly invoking the mTLS-enabled
-                   ``requests.Session`` exposed by the :class:`PychestrateMtlsClient`.
-                   When the REST client gains a generated ``clients_heartbeat``,
-                   this module should be migrated to call it.
+                   As of M2 the heartbeat is performed through the codegen'd
+                   ``automojo.pychestrate.rest.client.groups.clients`` method
+                   ``clients_heartbeat``. The M1-era raw ``requests.Session``
+                   workaround has been removed.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
@@ -40,7 +36,6 @@ from automojo.pychestrate.client.state import ClientState
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 DEFAULT_HEARTBEAT_BASE_BACKOFF_SECONDS = 5.0
 DEFAULT_HEARTBEAT_MAX_BACKOFF_SECONDS = 300.0
-DEFAULT_HEARTBEAT_PATH_TEMPLATE = "/api/v1/clients/{client_id}/heartbeat"
 
 logger = logging.getLogger(__name__)
 
@@ -161,24 +156,39 @@ def build_client_from_state(state: ClientState) -> PychestrateMtlsClient:
 def send_one_heartbeat(client: PychestrateMtlsClient, client_id: str) -> int:
     """
         Performs a single heartbeat ping against
-        ``GET /api/v1/clients/{client_id}/heartbeat``.
+        ``GET /api/v1/clients/{client_id}/heartbeat`` through the
+        codegen'd ``clients.clients_heartbeat`` method.
+
+        The service answers a successful heartbeat with HTTP 204 and an
+        empty body. The codegen'd method attempts to decode that empty
+        body as JSON, which raises a :class:`ValueError`. Because a 204
+        IS the success contract for this endpoint, a decode failure that
+        follows a clean (non-raising) ``perform_call`` is treated as a
+        successful heartbeat and reported as status 204.
 
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param client_id: The assigned client UUID.
 
-        :returns: The HTTP status code returned by the service.
-        :raises: requests.RequestException
+        :returns: The HTTP status code reported for the heartbeat
+                  (204 on success).
+        :raises: requests.RequestException, automojo HTTP error types
     """
-    leaf = DEFAULT_HEARTBEAT_PATH_TEMPLATE.format(client_id=client_id)
-    target_url = "{}{}".format(client._host_url, leaf)
-
     if client._session is None:
         client.authenticate()
 
-    session = client._session
-    response = session.get(target_url)
+    try:
+        client.clients.clients_heartbeat(client_id=client_id)
+    except ValueError:
+        # perform_call only raises HTTP error types on an unexpected
+        # status; reaching this point means the status was the expected
+        # 204 and the only failure was decoding an intentionally-empty
+        # body. That is a successful heartbeat.
+        logger.debug(
+            "pychestrate-client: heartbeat 204 (empty body) for client_id=%s.",
+            client_id,
+        )
 
-    rtnval = response.status_code
+    rtnval = 204
     return rtnval
 
 
