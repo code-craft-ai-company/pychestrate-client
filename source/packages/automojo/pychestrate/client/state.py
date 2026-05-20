@@ -12,7 +12,7 @@ __copyright__ = "Copyright 2025, Automation Mojo LLC"
 __credits__ = []
 
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import json
 import os
@@ -28,6 +28,7 @@ FILENAME_CLIENT_CERT = "client.crt"
 FILENAME_SERVICE_CA = "service-ca.crt"
 FILENAME_CONFIG = "config.json"
 FILENAME_ENVELOPE_SIGNING_KEY = "envelope-signing-public-key.pem"
+FILENAME_ENVELOPE_SIGNING_KEYS = "envelope-signing-keys.json"
 
 #: Sub-directory under the state directory where the dispatch consumer
 #: records the local outcome of each executed job (M2 records the
@@ -131,6 +132,24 @@ class ClientState:
             :returns: The full path to the envelope signing public-key file.
         """
         rtnval = os.path.join(self._state_dir, FILENAME_ENVELOPE_SIGNING_KEY)
+        return rtnval
+
+    @property
+    def envelope_signing_keys_path(self) -> str:
+        """
+            Gets the on-disk path where the JWKS-style envelope signing
+            public-key set (JSON) is stored.
+
+            The service exposes its Ed25519 envelope signing public keys
+            both inside the enrollment-redeem response and through
+            ``GET /api/v1/envelope-signing-keys``. This file is the
+            persisted, ``key_id``-indexed copy of that set; it is the
+            normal source the dispatch consumer verifies envelopes against.
+
+            :returns: The full path to the ``envelope-signing-keys.json``
+                      file.
+        """
+        rtnval = os.path.join(self._state_dir, FILENAME_ENVELOPE_SIGNING_KEYS)
         return rtnval
 
     @property
@@ -304,6 +323,86 @@ class ClientState:
             :returns: True if the signing public key file is present.
         """
         rtnval = os.path.isfile(self.envelope_signing_key_path)
+        return rtnval
+
+    def write_envelope_signing_keys(self, keys: List[Dict[str, Any]]) -> None:
+        """
+            Persists the JWKS-style envelope signing public-key set to disk
+            as a JSON document.
+
+            Each entry mirrors the service ``SigningKey`` schema
+            (``key_id``, ``algorithm``, ``public_key_pem``, ``status``).
+            The dispatch consumer indexes this set by ``key_id`` to verify
+            the signature on every signed job envelope before execution.
+
+            :param keys: A list of signing-key dictionaries to persist.
+
+            :returns: None
+        """
+        path = self.envelope_signing_keys_path
+        document = {"keys": keys}
+        with open(path, "w", encoding="utf-8") as keysf:
+            json.dump(document, keysf, indent=4, sort_keys=True)
+            keysf.write(os.linesep)
+        os.chmod(path, 0o644)
+        return
+
+    def read_envelope_signing_keys(self) -> List[Dict[str, Any]]:
+        """
+            Reads the JWKS-style envelope signing public-key set from disk.
+
+            :returns: A list of signing-key dictionaries.
+            :raises: ConfigurationError when the file is missing or is not a
+                     valid signing-key-set JSON document.
+        """
+        path = self.envelope_signing_keys_path
+        if not os.path.isfile(path):
+            errmsg_lines = [
+                "The pychestrate-client state directory does not contain an "
+                "envelope signing-key set.",
+                "    expected: {}".format(path),
+                "The set is normally persisted during 'pychestrate-client "
+                "enroll' or refreshed automatically from "
+                "'GET /api/v1/envelope-signing-keys'.",
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise ConfigurationError(errmsg)
+
+        try:
+            with open(path, "r", encoding="utf-8") as keysf:
+                loaded = json.load(keysf)
+        except (ValueError, OSError) as readerr:
+            errmsg_lines = [
+                "The pychestrate-client envelope signing-key set could not "
+                "be read.",
+                "    path: {}".format(path),
+                "    reason: {}".format(readerr),
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise ConfigurationError(errmsg) from readerr
+
+        if not isinstance(loaded, dict):
+            errmsg = ("The envelope signing-key set at {} is not a JSON "
+                      "object.".format(path))
+            raise ConfigurationError(errmsg)
+
+        keys = loaded.get("keys", None)
+        if not isinstance(keys, list):
+            errmsg = ("The envelope signing-key set at {} does not carry a "
+                      "'keys' list.".format(path))
+            raise ConfigurationError(errmsg)
+
+        rtnval = keys
+        return rtnval
+
+    def has_envelope_signing_keys(self) -> bool:
+        """
+            Returns True when a JWKS-style envelope signing-key set has been
+            persisted into the state directory.
+
+            :returns: True if the signing-key-set file is present.
+        """
+        rtnval = os.path.isfile(self.envelope_signing_keys_path)
         return rtnval
 
     def read_config(self) -> Dict[str, Any]:

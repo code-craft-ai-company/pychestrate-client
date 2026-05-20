@@ -13,6 +13,7 @@ from automojo import testbase
 
 from automojo.pychestrate.client.result_uploader import (
     RESULT_FORMAT_TAG,
+    PresignedUploadDriver,
     ResultStoreDriver,
     ResultUploaderAspects,
     TERMINAL_OUTCOME_FAILURE,
@@ -108,14 +109,41 @@ class _RecordingStoreDriver(ResultStoreDriver):
         return None
 
 
-class _FakeResultsGroup:
+class _FakeUploadTarget:
     """
-        Records every result manifest posted, optionally failing the POST.
+        Mirrors the codegen'd ``Artifactuploadtarget`` shape.
     """
 
-    def __init__(self, *, raise_on_post=False):
+    def __init__(self, *, path, put_url, headers):
+        self.path = path
+        self.put_url = put_url
+        self.expires_at = "2026-05-19T13:00:00+00:00"
+        self.headers = headers
+        return
+
+
+class _FakePresignResponse:
+    """
+        Mirrors the codegen'd ``Artifactpresignresponse`` shape.
+    """
+
+    def __init__(self, *, run_id, uploads):
+        self.run_id = run_id
+        self.uploads = uploads
+        return
+
+
+class _FakeResultsGroup:
+    """
+        Records every result manifest posted and every presign request,
+        optionally failing the POST or the presign call.
+    """
+
+    def __init__(self, *, raise_on_post=False, raise_on_presign=False):
         self.manifests = []
+        self.presign_requests = []
         self._raise_on_post = raise_on_post
+        self._raise_on_presign = raise_on_presign
         return
 
     def results_post_complete(self, run_id, body, **kwargs):
@@ -124,14 +152,64 @@ class _FakeResultsGroup:
             raise RuntimeError("simulated results/complete failure")
         return None
 
+    def artifacts_presign_upload(self, run_id, body, **kwargs):
+        paths = list(body.paths)
+        self.presign_requests.append((run_id, paths))
+        if self._raise_on_presign:
+            raise RuntimeError("simulated presign 5xx")
+        uploads = []
+        for nxtpath in paths:
+            target = _FakeUploadTarget(
+                path=nxtpath,
+                put_url="https://pychestrate.example.com/api/v1/runs/{}/"
+                        "artifacts/_local-upload?path={}".format(
+                            run_id, nxtpath),
+                headers={})
+            uploads.append(target)
+        rtnval = _FakePresignResponse(run_id=run_id, uploads=uploads)
+        return rtnval
+
+
+class _FakeHttpResponse:
+    """
+        Minimal stand-in for a :class:`requests.Response`.
+    """
+
+    def __init__(self, status_code):
+        self.status_code = status_code
+        return
+
+
+class _FakeMtlsSession:
+    """
+        Records every PUT issued by the presigned upload driver.
+    """
+
+    def __init__(self, *, status_code=201):
+        self.puts = []
+        self._status_code = status_code
+        return
+
+    def put(self, url, data=None, headers=None):
+        self.puts.append((url, data, headers))
+        rtnval = _FakeHttpResponse(status_code=self._status_code)
+        return rtnval
+
 
 class _FakeRestClient:
     """
-        Minimal stand-in carrying only the ``results`` group.
+        Minimal stand-in for :class:`PychestrateMtlsClient` carrying the
+        ``results`` group and an mTLS-style session for presigned PUTs.
     """
 
-    def __init__(self, *, raise_on_post=False):
-        self.results = _FakeResultsGroup(raise_on_post=raise_on_post)
+    def __init__(self, *, raise_on_post=False, raise_on_presign=False,
+                 put_status_code=201):
+        self.results = _FakeResultsGroup(
+            raise_on_post=raise_on_post, raise_on_presign=raise_on_presign)
+        self._session = _FakeMtlsSession(status_code=put_status_code)
+        return
+
+    def authenticate(self):
         return
 
 
@@ -195,15 +273,19 @@ def test_build_result_manifest_carries_counts_and_paths():
     return
 
 
-def test_upload_result_tree_without_driver_reports_failure():
+def test_upload_result_tree_per_file_driver_uses_put_tree_default():
+    # A per-file site driver (one that overrides only put_object) must
+    # transfer every file via the inherited put_tree default loop.
     with tempfile.TemporaryDirectory() as tmpdir:
         result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
         entries = walk_result_tree(result_dir=result_dir)
 
+        driver = _RecordingStoreDriver()
         uploaded = upload_result_tree(
-            entries=entries, backend_driver="s3",
-            backend_key_prefix="proj/run-x", store_driver=None)
-        testbase.assert_false(uploaded)
+            run_id=RUN_ID, entries=entries, backend_driver="s3",
+            backend_key_prefix="proj/run-x", store_driver=driver)
+        testbase.assert_true(uploaded)
+        testbase.assert_equal(len(driver.transfers), 6)
     return
 
 
@@ -214,7 +296,7 @@ def test_upload_result_tree_with_driver_transfers_every_file():
         driver = _RecordingStoreDriver()
 
         uploaded = upload_result_tree(
-            entries=entries, backend_driver="s3",
+            run_id=RUN_ID, entries=entries, backend_driver="s3",
             backend_key_prefix="proj/run-x", store_driver=driver)
         testbase.assert_true(uploaded)
         testbase.assert_equal(len(driver.transfers), 6)
@@ -228,8 +310,65 @@ def test_upload_result_tree_failed_transfer_reports_failure():
         driver = _RecordingStoreDriver(raise_on_path="diagnostics/trace.txt")
 
         uploaded = upload_result_tree(
-            entries=entries, backend_driver="s3",
+            run_id=RUN_ID, entries=entries, backend_driver="s3",
             backend_key_prefix="proj/run-x", store_driver=driver)
+        testbase.assert_false(uploaded)
+    return
+
+
+def test_presigned_driver_presigns_and_puts_every_file():
+    # The default PresignedUploadDriver must batch-presign every relative
+    # path and PUT each artifact's bytes to its minted target.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        entries = walk_result_tree(result_dir=result_dir)
+        client = _FakeRestClient()
+        driver = PresignedUploadDriver(client=client)
+
+        driver.put_tree(
+            run_id=RUN_ID, backend_driver="local", backend_key_prefix="p",
+            entries=entries)
+
+        # Exactly one batch presign call, carrying every relative path.
+        testbase.assert_equal(len(client.results.presign_requests), 1)
+        presign_run_id, presign_paths = client.results.presign_requests[0]
+        testbase.assert_equal(presign_run_id, RUN_ID)
+        testbase.assert_equal(len(presign_paths), 6)
+
+        # Every artifact's bytes were PUT through the mTLS session.
+        testbase.assert_equal(len(client._session.puts), 6)
+    return
+
+
+def test_presigned_driver_presign_failure_raises():
+    # A presign 5xx must surface as an exception so upload_result_tree
+    # reports the failure and the run is marked for retry.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        entries = walk_result_tree(result_dir=result_dir)
+        client = _FakeRestClient(raise_on_presign=True)
+        driver = PresignedUploadDriver(client=client)
+
+        uploaded = upload_result_tree(
+            run_id=RUN_ID, entries=entries, backend_driver="local",
+            backend_key_prefix="p", store_driver=driver)
+        testbase.assert_false(uploaded)
+        testbase.assert_equal(len(client._session.puts), 0)
+    return
+
+
+def test_presigned_driver_rejects_non_2xx_put():
+    # A presigned PUT that answers a non-2xx status must surface as a
+    # failure.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        entries = walk_result_tree(result_dir=result_dir)
+        client = _FakeRestClient(put_status_code=500)
+        driver = PresignedUploadDriver(client=client)
+
+        uploaded = upload_result_tree(
+            run_id=RUN_ID, entries=entries, backend_driver="local",
+            backend_key_prefix="p", store_driver=driver)
         testbase.assert_false(uploaded)
     return
 
@@ -265,14 +404,41 @@ def test_upload_run_results_complete_path_posts_manifest():
     return
 
 
-def test_upload_run_results_no_driver_marks_local_state_for_retry():
-    # The result-upload mechanism gap: with no object-store driver wired the
-    # byte transfer cannot complete; the run must be marked upload_failed so
-    # the next 'run' invocation can retry.
+def test_upload_run_results_defaults_to_presigned_driver():
+    # With no driver explicitly wired the uploader defaults to the
+    # PresignedUploadDriver: it presigns + PUTs the tree and posts the
+    # completion manifest, all without a site-provisioned object store.
     with tempfile.TemporaryDirectory() as tmpdir:
         state = _make_state(os.path.join(tmpdir, "state"))
         result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
         client = _FakeRestClient()
+
+        outcome = upload_run_results(
+            client=client, state=state, envelope=_sample_envelope(),
+            result_dir=result_dir, run_succeeded=True)
+
+        testbase.assert_true(outcome.succeeded)
+        testbase.assert_equal(outcome.status, UPLOAD_STATUS_COMPLETE)
+        testbase.assert_true(outcome.tree_uploaded)
+        testbase.assert_true(outcome.manifest_posted)
+
+        # The presigned protocol ran: one presign batch + per-file PUTs.
+        testbase.assert_equal(len(client.results.presign_requests), 1)
+        testbase.assert_equal(len(client._session.puts), outcome.file_count)
+        testbase.assert_equal(len(client.results.manifests), 1)
+
+        testbase.assert_false(run_needs_upload_retry(state=state,
+                                                     run_id=RUN_ID))
+    return
+
+
+def test_upload_run_results_presign_failure_marks_retry():
+    # A genuine presign failure (5xx) must mark the run upload_failed for
+    # retry while still posting the completion manifest for reconciliation.
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = _make_state(os.path.join(tmpdir, "state"))
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        client = _FakeRestClient(raise_on_presign=True)
 
         outcome = upload_run_results(
             client=client, state=state, envelope=_sample_envelope(),

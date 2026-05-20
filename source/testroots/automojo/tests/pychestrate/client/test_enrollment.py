@@ -125,6 +125,73 @@ def test_perform_enrollment_persists_state():
     return
 
 
+def test_perform_enrollment_persists_bundled_signing_keys():
+    # The enrollment-redeem response now bundles the JWKS-style envelope
+    # signing-key set; it must be persisted alongside the mTLS material.
+    fake_body = {
+        "client_id": "11111111-2222-3333-4444-555555555555",
+        "client_certificate_pem": "-----BEGIN CERTIFICATE-----\nCC\n-----END CERTIFICATE-----",
+        "ca_chain_pem": "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
+        "not_after": "2030-01-01T00:00:00Z",
+        "envelope_signing_keys": [
+            {
+                "key_id": "envelope-key-2026",
+                "algorithm": "ed25519",
+                "public_key_pem": "-----BEGIN PUBLIC KEY-----\nKK\n"
+                                  "-----END PUBLIC KEY-----",
+                "status": "active",
+            },
+        ],
+    }
+    session = FakeSession(response=FakeResponse(status_code=200, body=fake_body))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+
+        result = perform_enrollment(
+            service_url="https://pychestrate.example.com",
+            bootstrap_token="boot-secret",
+            client_name="unit-client",
+            state=state,
+            session=session,
+        )
+
+        testbase.assert_equal(result["signing_key_count"], 1)
+        testbase.assert_true(state.has_envelope_signing_keys())
+
+        persisted = state.read_envelope_signing_keys()
+        testbase.assert_equal(len(persisted), 1)
+        testbase.assert_equal(persisted[0]["key_id"], "envelope-key-2026")
+    return
+
+
+def test_perform_enrollment_without_bundled_signing_keys_persists_none():
+    # When the redeem response omits the signing-key set the enrollment
+    # still succeeds; the set is refreshed lazily later.
+    fake_body = {
+        "client_id": "11111111-2222-3333-4444-555555555555",
+        "client_certificate_pem": "-----BEGIN CERTIFICATE-----\nCC\n-----END CERTIFICATE-----",
+        "ca_chain_pem": "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
+        "not_after": "2030-01-01T00:00:00Z",
+    }
+    session = FakeSession(response=FakeResponse(status_code=200, body=fake_body))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+
+        result = perform_enrollment(
+            service_url="https://pychestrate.example.com",
+            bootstrap_token="boot-secret",
+            client_name="unit-client",
+            state=state,
+            session=session,
+        )
+
+        testbase.assert_equal(result["signing_key_count"], 0)
+        testbase.assert_false(state.has_envelope_signing_keys())
+    return
+
+
 def test_perform_enrollment_raises_on_non_200():
     session = FakeSession(response=FakeResponse(status_code=403, body={"detail": "denied"}))
 

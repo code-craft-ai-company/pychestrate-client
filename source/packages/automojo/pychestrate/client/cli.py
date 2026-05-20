@@ -6,6 +6,12 @@
                    ``heartbeat``, ``version``) plus the M2 subcommands
                    (``install-signing-key``, ``run``).
 
+                   As of M4 the client fetches the envelope signing-key set
+                   automatically (bundled in the enrollment-redeem response,
+                   refreshed from ``GET /api/v1/envelope-signing-keys`` on an
+                   unknown key id), so ``install-signing-key`` is retained
+                   only for air-gapped / fallback installs.
+
                    The ``heartbeat`` subcommand is retained for operators
                    who want a liveness-only process; the ``run`` subcommand
                    is the normal pod-side mode — it runs the heartbeat loop
@@ -129,14 +135,15 @@ def _cmd_install_signing_key(args: argparse.Namespace) -> int:
 
         Installs the service's Ed25519 job-envelope signing public key
         into the client state directory and records its key id in the
-        config. The dispatch consumer requires this key — it refuses to
-        execute job envelopes whose signature it cannot verify.
+        config.
 
-        NOTE: this subcommand exists because the Pychestrate REST API
-        currently exposes no JWKS / signing-public-key endpoint and the
-        enrollment-redeem response does not carry the envelope signing
-        key. The operator installs it out-of-band until the service is
-        extended to deliver it.
+        NOTE: this subcommand is no longer part of the happy path. As of
+        M4 the client fetches the JWKS-style signing-key set automatically
+        — it is bundled in the enrollment-redeem response and refreshed
+        from ``GET /api/v1/envelope-signing-keys`` whenever an envelope is
+        signed by an unknown key id. This subcommand is retained only for
+        air-gapped / fallback installs where the operator must seed the
+        single-file signing key out-of-band.
 
         :param args: Parsed CLI arguments.
 
@@ -308,7 +315,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     install_key_parser = subparsers.add_parser(
         "install-signing-key",
-        help="Install the service's Ed25519 envelope signing public key.",
+        help="Install the service's Ed25519 envelope signing public key "
+             "out-of-band (air-gapped / fallback only; the client otherwise "
+             "fetches the signing-key set automatically).",
     )
     install_key_parser.add_argument("--key-file", required=True,
                                     help="Path to the PEM-encoded Ed25519 "
