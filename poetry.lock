@@ -145,7 +145,7 @@ optional = false
 python-versions = ">=3.10,<4.0"
 groups = ["main"]
 files = []
-develop = true
+develop = false
 
 [package.dependencies]
 automojo-credentials = {git = "https://github.com/automationmojo/automojo-credentials.git", branch = "main"}
@@ -153,8 +153,10 @@ automojo-errors = {git = "https://github.com/automationmojo/automojo-errors.git"
 automojo-restclient-base = {git = "https://github.com/automationmojo/automojo-restclient-base.git", branch = "main"}
 
 [package.source]
-type = "directory"
-url = "../automojo-restclient-pychestrate"
+type = "git"
+url = "https://github.com/automationmojo/automojo-restclient-pychestrate.git"
+reference = "main"
+resolved_reference = "954bca2611f8b6bb522bdaf9c47ea2c03a13130d"
 
 [[package]]
 name = "automojo-runtime"
@@ -766,4 +768,4 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<4.0"
-content-hash = "b0b9a554fdb69af1549185157fe4658014b527448e9f24454b45dc4376aa5b9d"
+content-hash = "cfac20ad686d5729177476163246ea15d60a8006e4e4dcefd546b410f44c5f36"

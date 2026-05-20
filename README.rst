@@ -26,9 +26,22 @@ Highlights
 Milestone Scope
 ===============
 
-- **M1 (this release)** - enrollment + heartbeat.
-- **M2 (planned)** - long-poll dispatch consumption + testbase invocation.
+- **M1** - enrollment + heartbeat.
+- **M2 (this release)** - long-poll dispatch consumption, signed-envelope
+  verification, and testbase invocation. The ``run`` subcommand drives the
+  heartbeat loop and the dispatch-consumer loop concurrently.
 - **M3 (planned)** - progress + result push.
+
+Envelope signing key
+====================
+
+The dispatch consumer verifies the Ed25519 signature on every job envelope
+before executing it and refuses to run an envelope it cannot verify. The
+Pychestrate REST API currently exposes no JWKS / signing-public-key
+endpoint, so the operator installs the service's signing public key
+out-of-band::
+
+   pychestrate-client install-signing-key --key-file <pem> --key-id <id>
 
 Repository Structure
 ====================

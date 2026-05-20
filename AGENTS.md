@@ -93,14 +93,17 @@ For local development:
 
 # Project Specific Rules
 
-- **M1 scope is enrollment + heartbeat only.** Dispatch consumption + testbase
-  invocation is M2; progress + result push is M3.
+- **M1 delivered enrollment + heartbeat. M2 delivers dispatch consumption +
+  testbase invocation.** Progress + result push remains M3.
 - Do not bypass the codegen'd REST client. If an operation is missing from
   `automojo-restclient-pychestrate`, halt and report rather than hand-rolling
   the HTTP call.
-- The codegen'd REST client is currently consumed as a local **path dependency**
-  in `pyproject.toml`. Once that sibling repo is pushed to GitHub, convert the
-  dependency to a git source matching the other `automojo-*` deps.
+- The codegen'd REST client is consumed as a git source dependency in
+  `pyproject.toml`, matching the other `automojo-*` deps.
+- The dispatch consumer MUST verify the Ed25519 signature on every job
+  envelope before executing it. The signing public key is installed
+  out-of-band via `pychestrate-client install-signing-key` until the
+  service exposes a JWKS / signing-public-key endpoint.
 
 # Pull Request Guidelines
 

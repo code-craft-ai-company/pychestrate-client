@@ -27,6 +27,12 @@ FILENAME_CLIENT_KEY = "client.key"
 FILENAME_CLIENT_CERT = "client.crt"
 FILENAME_SERVICE_CA = "service-ca.crt"
 FILENAME_CONFIG = "config.json"
+FILENAME_ENVELOPE_SIGNING_KEY = "envelope-signing-public-key.pem"
+
+#: Sub-directory under the state directory where the dispatch consumer
+#: records the local outcome of each executed job (M2 records the
+#: testbase output directory + exit code; M3 will push results upstream).
+DIRNAME_RUNS = "runs"
 
 
 class ClientState:
@@ -114,6 +120,28 @@ class ClientState:
             :returns: The full path to the ``config.json`` file.
         """
         rtnval = os.path.join(self._state_dir, FILENAME_CONFIG)
+        return rtnval
+
+    @property
+    def envelope_signing_key_path(self) -> str:
+        """
+            Gets the on-disk path where the service's Ed25519 job-envelope
+            signing public key (PEM) is stored.
+
+            :returns: The full path to the envelope signing public-key file.
+        """
+        rtnval = os.path.join(self._state_dir, FILENAME_ENVELOPE_SIGNING_KEY)
+        return rtnval
+
+    @property
+    def runs_dir(self) -> str:
+        """
+            Gets the on-disk path of the directory that holds per-run
+            local execution records written by the dispatch consumer.
+
+            :returns: The full path to the runs directory.
+        """
+        rtnval = os.path.join(self._state_dir, DIRNAME_RUNS)
         return rtnval
 
     def ensure_dir(self) -> None:
@@ -224,6 +252,59 @@ class ClientState:
             cfgf.write(os.linesep)
         os.chmod(path, 0o644)
         return
+
+    def write_envelope_signing_key(self, key_pem: str) -> None:
+        """
+            Persists the PEM-encoded Ed25519 envelope signing public key
+            to disk. This key is used by the dispatch consumer to verify
+            the signature on every signed job envelope before execution.
+
+            :param key_pem: PEM-encoded Ed25519 public key text.
+
+            :returns: None
+        """
+        path = self.envelope_signing_key_path
+        with open(path, "w", encoding="utf-8") as keyf:
+            keyf.write(key_pem)
+        os.chmod(path, 0o644)
+        return
+
+    def read_envelope_signing_key(self) -> str:
+        """
+            Reads the PEM-encoded Ed25519 envelope signing public key
+            from disk.
+
+            :returns: The PEM-encoded public key text.
+            :raises: ConfigurationError
+        """
+        path = self.envelope_signing_key_path
+        if not os.path.isfile(path):
+            errmsg_lines = [
+                "The pychestrate-client state directory does not contain an "
+                "envelope signing public key.",
+                "    expected: {}".format(path),
+                "The dispatch consumer refuses to execute unverified job "
+                "envelopes. Install the service's Ed25519 envelope signing "
+                "public key with 'pychestrate-client install-signing-key ...'.",
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise ConfigurationError(errmsg)
+
+        with open(path, "r", encoding="utf-8") as keyf:
+            content = keyf.read()
+
+        rtnval = content
+        return rtnval
+
+    def has_envelope_signing_key(self) -> bool:
+        """
+            Returns True when an envelope signing public key has been
+            installed into the state directory.
+
+            :returns: True if the signing public key file is present.
+        """
+        rtnval = os.path.isfile(self.envelope_signing_key_path)
+        return rtnval
 
     def read_config(self) -> Dict[str, Any]:
         """

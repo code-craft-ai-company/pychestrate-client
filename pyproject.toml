@@ -24,10 +24,7 @@ automojo-errors = { git = "https://github.com/automationmojo/automojo-errors.git
 automojo-credentials = { git = "https://github.com/automationmojo/automojo-credentials.git", branch = "main" }
 automojo-restclient-base = { git = "https://github.com/automationmojo/automojo-restclient-base.git", branch = "main" }
 automojo-testbase = { git = "https://github.com/automationmojo/automojo-testbase.git", branch = "main" }
-# NOTE: automojo-restclient-pychestrate is referenced as a local path dep until the
-# sibling repository is pushed to GitHub. Convert to a git source once the repo
-# exists at github.com/automationmojo/automojo-restclient-pychestrate.
-automojo-restclient-pychestrate = { path = "../automojo-restclient-pychestrate", develop = true }
+automojo-restclient-pychestrate = { git = "https://github.com/automationmojo/automojo-restclient-pychestrate.git", branch = "main" }
 cryptography = ">=42.0.0"
 
 [tool.poetry.group.dev.dependencies]

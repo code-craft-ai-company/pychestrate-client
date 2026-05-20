@@ -2,8 +2,15 @@
     .. module:: cli
         :platform: Darwin, Linux, Unix, Windows
         :synopsis: Argparse-based entry point for the ``pychestrate-client``
-                   binary. Exposes the subcommands needed by the M1 milestone:
-                   ``enroll``, ``heartbeat``, ``version``.
+                   binary. Exposes the M1 subcommands (``enroll``,
+                   ``heartbeat``, ``version``) plus the M2 subcommands
+                   (``install-signing-key``, ``run``).
+
+                   The ``heartbeat`` subcommand is retained for operators
+                   who want a liveness-only process; the ``run`` subcommand
+                   is the normal pod-side mode — it runs the heartbeat loop
+                   and the dispatch-consumer loop concurrently on two
+                   threads.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
@@ -18,11 +25,18 @@ from typing import List, Optional
 import argparse
 import json
 import logging
+import os
 import sys
+import threading
 
 from automojo.errors.exceptions import BadParameterError, ConfigurationError, HTTPRequestError
 
 from automojo.pychestrate.client import VERSION
+from automojo.pychestrate.client.dispatch_consumer import (
+    DEFAULT_DISPATCH_POLL_TIMEOUT_SECONDS,
+    DispatchConsumerAspects,
+    run_dispatch_consumer_loop,
+)
 from automojo.pychestrate.client.enrollment import perform_enrollment
 from automojo.pychestrate.client.heartbeat import (
     DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
@@ -105,6 +119,126 @@ def _cmd_heartbeat(args: argparse.Namespace) -> int:
     return rtnval
 
 
+def _cmd_install_signing_key(args: argparse.Namespace) -> int:
+    """
+        Implements the ``install-signing-key`` subcommand.
+
+        Installs the service's Ed25519 job-envelope signing public key
+        into the client state directory and records its key id in the
+        config. The dispatch consumer requires this key — it refuses to
+        execute job envelopes whose signature it cannot verify.
+
+        NOTE: this subcommand exists because the Pychestrate REST API
+        currently exposes no JWKS / signing-public-key endpoint and the
+        enrollment-redeem response does not carry the envelope signing
+        key. The operator installs it out-of-band until the service is
+        extended to deliver it.
+
+        :param args: Parsed CLI arguments.
+
+        :returns: Process exit code (0 on success).
+    """
+    state = ClientState(state_dir=args.state_dir)
+
+    if not os.path.isfile(args.key_file):
+        print(
+            "pychestrate-client: signing key file not found: {}".format(
+                args.key_file),
+            file=sys.stderr,
+        )
+        rtnval = 2
+        return rtnval
+
+    try:
+        with open(args.key_file, "r", encoding="utf-8") as keyf:
+            key_pem = keyf.read()
+
+        state.ensure_dir()
+        state.write_envelope_signing_key(key_pem=key_pem)
+
+        config = state.read_config()
+        config["envelope_signing_key_id"] = args.key_id
+        state.write_config(config=config)
+    except (ConfigurationError, OSError) as installerr:
+        print(
+            "pychestrate-client: failed to install signing key: {}".format(
+                installerr),
+            file=sys.stderr,
+        )
+        rtnval = 2
+        return rtnval
+
+    print("pychestrate-client: envelope signing key installed.")
+    print("    key_id: {}".format(args.key_id))
+    print("    path: {}".format(state.envelope_signing_key_path))
+
+    rtnval = 0
+    return rtnval
+
+
+def _cmd_run(args: argparse.Namespace) -> int:
+    """
+        Implements the ``run`` subcommand — the normal pod-side mode.
+
+        Starts the heartbeat loop and the dispatch-consumer loop on two
+        daemon threads and blocks until either loop exits (both honor
+        SIGTERM/SIGINT for a graceful shutdown).
+
+        :param args: Parsed CLI arguments.
+
+        :returns: Process exit code (0 on graceful stop, 2 on a
+                  configuration failure).
+    """
+    state = ClientState(state_dir=args.state_dir)
+
+    try:
+        heartbeat_aspects = HeartbeatAspects(interval_seconds=args.interval)
+        consumer_aspects = DispatchConsumerAspects(
+            poll_timeout_seconds=args.poll_timeout)
+    except BadParameterError as cfgerr:
+        print("pychestrate-client: run failed: {}".format(cfgerr), file=sys.stderr)
+        rtnval = 2
+        return rtnval
+
+    thread_errors: List[str] = []
+
+    def _heartbeat_thread() -> None:
+        try:
+            run_heartbeat_loop(state=state, aspects=heartbeat_aspects)
+        except (BadParameterError, ConfigurationError) as hberr:
+            thread_errors.append("heartbeat loop: {}".format(hberr))
+        return
+
+    def _dispatch_thread() -> None:
+        try:
+            run_dispatch_consumer_loop(state=state, aspects=consumer_aspects)
+        except (BadParameterError, ConfigurationError) as dcerr:
+            thread_errors.append("dispatch consumer: {}".format(dcerr))
+        return
+
+    hb_thread = threading.Thread(
+        target=_heartbeat_thread, name="pychestrate-heartbeat", daemon=True)
+    dc_thread = threading.Thread(
+        target=_dispatch_thread, name="pychestrate-dispatch", daemon=True)
+
+    print("pychestrate-client: starting heartbeat + dispatch-consumer loops.")
+    hb_thread.start()
+    dc_thread.start()
+
+    hb_thread.join()
+    dc_thread.join()
+
+    if len(thread_errors) > 0:
+        for nxterr in thread_errors:
+            print("pychestrate-client: {}".format(nxterr), file=sys.stderr)
+        rtnval = 2
+        return rtnval
+
+    print("pychestrate-client: run loops exited.")
+    rtnval = 0
+    return rtnval
+
+
 def _cmd_version(args: argparse.Namespace) -> int:
     """
         Implements the ``version`` subcommand.
@@ -127,7 +261,8 @@ def _build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="pychestrate-client",
-        description="Pychestrate pod-side runtime client (M1: enroll + heartbeat).",
+        description="Pychestrate pod-side runtime client "
+                    "(enroll, heartbeat, dispatch consumer + testbase executor).",
     )
     parser.add_argument(
         "--state-dir",
@@ -166,6 +301,34 @@ def _build_parser() -> argparse.ArgumentParser:
                                   help="Heartbeat interval in seconds (default: {}).".format(
                                       DEFAULT_HEARTBEAT_INTERVAL_SECONDS))
     heartbeat_parser.set_defaults(handler=_cmd_heartbeat)
+
+    install_key_parser = subparsers.add_parser(
+        "install-signing-key",
+        help="Install the service's Ed25519 envelope signing public key.",
+    )
+    install_key_parser.add_argument("--key-file", required=True,
+                                    help="Path to the PEM-encoded Ed25519 "
+                                         "envelope signing public key.")
+    install_key_parser.add_argument("--key-id", required=True,
+                                    help="The key id (JWKS key_id) the "
+                                         "service stamps on signed envelopes.")
+    install_key_parser.set_defaults(handler=_cmd_install_signing_key)
+
+    run_parser = subparsers.add_parser(
+        "run",
+        help="Run the heartbeat loop and the dispatch-consumer loop "
+             "concurrently (normal pod-side mode).",
+    )
+    run_parser.add_argument("--interval", type=float,
+                            default=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+                            help="Heartbeat interval in seconds (default: {}).".format(
+                                DEFAULT_HEARTBEAT_INTERVAL_SECONDS))
+    run_parser.add_argument("--poll-timeout", type=int,
+                            default=DEFAULT_DISPATCH_POLL_TIMEOUT_SECONDS,
+                            help="Dispatch long-poll wait window in seconds "
+                                 "(default: {}).".format(
+                                     DEFAULT_DISPATCH_POLL_TIMEOUT_SECONDS))
+    run_parser.set_defaults(handler=_cmd_run)
 
     version_parser = subparsers.add_parser(
         "version",
