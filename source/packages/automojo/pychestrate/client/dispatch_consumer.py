@@ -16,6 +16,17 @@
                    + ``results/complete`` POST are the authoritative run
                    completion signal.
 
+                   M5 scope: after verification the consumer branches on
+                   the envelope's ``job_kind`` discriminator. A
+                   ``job_kind=test`` envelope runs the testbase executor (the
+                   unchanged M3 path); a ``job_kind=build`` envelope runs the
+                   build executor (source acquisition -> makefile runner ->
+                   artifact upload); a ``job_kind=provision`` envelope is not
+                   yet supported -- it is acked with a rejection note rather
+                   than crashing the consumer. A missing / unrecognized
+                   ``job_kind`` defaults to ``test`` for backward
+                   compatibility.
+
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
 
@@ -35,6 +46,15 @@ from datetime import datetime, timezone
 
 from automojo.errors.exceptions import BadParameterError, ConfigurationError
 
+from automojo.pychestrate.client.build_executor import (
+    DEFAULT_BUILD_EXECUTOR_ASPECTS,
+    BuildExecutorAspects,
+    BuildRunOutcome,
+    execute_build_envelope,
+)
+from automojo.pychestrate.client.build_progress_reporter import (
+    BuildProgressReporter,
+)
 from automojo.pychestrate.client.envelope_verifier import (
     EnvelopeVerificationResult,
     verify_dispatch_envelope,
@@ -49,6 +69,7 @@ from automojo.pychestrate.client.pychestratemtlsclient import PychestrateMtlsCli
 from automojo.pychestrate.client.result_uploader import (
     DEFAULT_RESULT_UPLOADER_ASPECTS,
     ResultUploaderAspects,
+    upload_build_results,
     upload_run_results,
 )
 from automojo.pychestrate.client.signing_keys import refresh_signing_keys
@@ -60,6 +81,18 @@ from automojo.pychestrate.client.testbase_executor import (
     execute_job_envelope,
     resolve_run_output_dir,
 )
+
+
+#: ``job_kind`` discriminator values carried on a dispatched envelope. The
+#: consumer branches on this before resolving the kind-specific executor.
+#: These mirror the server's ``jobs.envelope.schema`` constants.
+JOB_KIND_TEST = "test"
+JOB_KIND_BUILD = "build"
+JOB_KIND_PROVISION = "provision"
+
+#: The ``job_kind`` an envelope defaults to when the discriminator is
+#: missing or unrecognized -- matches the server's ``DEFAULT_JOB_KIND``.
+DEFAULT_JOB_KIND = JOB_KIND_TEST
 
 
 DEFAULT_DISPATCH_POLL_TIMEOUT_SECONDS = 30
@@ -88,6 +121,8 @@ class DispatchConsumerAspects:
                  sleep_func: Optional[Callable[[float], None]] = None,
                  executor_aspects: TestbaseExecutorAspects =
                  DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
+                 build_executor_aspects: BuildExecutorAspects =
+                 DEFAULT_BUILD_EXECUTOR_ASPECTS,
                  progress_reporter_aspects: ProgressReporterAspects =
                  DEFAULT_PROGRESS_REPORTER_ASPECTS,
                  result_uploader_aspects: ResultUploaderAspects =
@@ -107,7 +142,11 @@ class DispatchConsumerAspects:
             :param sleep_func: Optional sleep override; defaults to
                                :func:`time.sleep`.
             :param executor_aspects: Aspects forwarded to the testbase
-                                     executor for each dispatched job.
+                                     executor for each dispatched
+                                     ``job_kind=test`` job.
+            :param build_executor_aspects: Aspects forwarded to the build
+                                           executor for each dispatched
+                                           ``job_kind=build`` job.
             :param progress_reporter_aspects: Aspects forwarded to the
                                               progress reporter created for
                                               each dispatched job.
@@ -138,6 +177,7 @@ class DispatchConsumerAspects:
         self._max_iterations = max_iterations
         self._sleep_func = sleep_func if sleep_func is not None else time.sleep
         self._executor_aspects = executor_aspects
+        self._build_executor_aspects = build_executor_aspects
         self._progress_reporter_aspects = progress_reporter_aspects
         self._result_uploader_aspects = result_uploader_aspects
         return
@@ -165,6 +205,10 @@ class DispatchConsumerAspects:
     @property
     def executor_aspects(self) -> TestbaseExecutorAspects:
         return self._executor_aspects
+
+    @property
+    def build_executor_aspects(self) -> BuildExecutorAspects:
+        return self._build_executor_aspects
 
     @property
     def progress_reporter_aspects(self) -> ProgressReporterAspects:
@@ -311,6 +355,156 @@ def acknowledge_dispatch(client: PychestrateMtlsClient, run_id: str,
     return
 
 
+def _resolve_job_kind(envelope: Dict[str, Any]) -> str:
+    """
+        Resolves the ``job_kind`` discriminator from a verified envelope.
+
+        An envelope that omits ``job_kind`` (or carries an unrecognized
+        value) defaults to ``test`` for backward compatibility -- this
+        matches the server's ``DEFAULT_JOB_KIND``: envelopes minted before
+        the discriminator was introduced still route to the testbase
+        executor.
+
+        :param envelope: The verified envelope dict.
+
+        :returns: One of ``test`` / ``build`` / ``provision``.
+    """
+    raw = envelope.get("job_kind", None)
+    if raw is None:
+        rtnval = DEFAULT_JOB_KIND
+        return rtnval
+
+    candidate = str(raw)
+    if candidate in (JOB_KIND_TEST, JOB_KIND_BUILD, JOB_KIND_PROVISION):
+        rtnval = candidate
+        return rtnval
+
+    logger.warning(
+        "pychestrate-client: envelope carries an unrecognized job_kind=%r; "
+        "defaulting to '%s' for backward compatibility.",
+        candidate, DEFAULT_JOB_KIND,
+    )
+    rtnval = DEFAULT_JOB_KIND
+    return rtnval
+
+
+def _handle_test_job(*, client: PychestrateMtlsClient, state: ClientState,
+                      envelope: Dict[str, Any], run_id: str, client_id: str,
+                      local_run_id: str,
+                      aspects: DispatchConsumerAspects) -> str:
+    """
+        Runs a verified ``job_kind=test`` envelope through the testbase
+        executor with live progress streaming, uploads the result tree,
+        and returns the ack note.
+
+        :param client: A configured :class:`PychestrateMtlsClient`.
+        :param state: The :class:`ClientState`.
+        :param envelope: The verified envelope dict.
+        :param run_id: The server-assigned run UUID.
+        :param client_id: The assigned client UUID.
+        :param local_run_id: The client-minted local run identifier.
+        :param aspects: Behavior-shaping aspects.
+
+        :returns: The free-form ack note describing the run + upload.
+    """
+    progress_reporter = ProgressReporter(
+        client=client,
+        run_id=run_id,
+        client_id=client_id,
+        output_dir=resolve_run_output_dir(state=state, run_id=run_id),
+        aspects=aspects.progress_reporter_aspects,
+    )
+
+    outcome: TestbaseRunOutcome = execute_job_envelope(
+        state=state,
+        envelope=envelope,
+        local_run_id=local_run_id,
+        aspects=aspects.executor_aspects,
+        progress_reporter=progress_reporter,
+    )
+
+    upload_outcome = upload_run_results(
+        client=client,
+        state=state,
+        envelope=envelope,
+        result_dir=outcome.output_dir,
+        run_succeeded=outcome.succeeded,
+        aspects=aspects.result_uploader_aspects,
+    )
+
+    if outcome.succeeded:
+        run_note = "testbase run succeeded (output={})".format(
+            outcome.output_dir)
+    else:
+        run_note = "testbase run FAILED ({})".format(outcome.detail)
+
+    if upload_outcome.succeeded:
+        upload_note = "results uploaded ({} files)".format(
+            upload_outcome.file_count)
+    else:
+        upload_note = "result upload INCOMPLETE ({})".format(
+            upload_outcome.detail)
+
+    rtnval = "ACCEPTED: {}; {}.".format(run_note, upload_note)
+    return rtnval
+
+
+def _handle_build_job(*, client: PychestrateMtlsClient, state: ClientState,
+                       envelope: Dict[str, Any], run_id: str, client_id: str,
+                       local_run_id: str,
+                       aspects: DispatchConsumerAspects) -> str:
+    """
+        Runs a verified ``job_kind=build`` envelope through the build
+        executor (source acquisition + makefile runner), uploads the build
+        artifact tree, and returns the ack note.
+
+        :param client: A configured :class:`PychestrateMtlsClient`.
+        :param state: The :class:`ClientState`.
+        :param envelope: The verified envelope dict.
+        :param run_id: The server-assigned run UUID.
+        :param client_id: The assigned client UUID.
+        :param local_run_id: The client-minted local run identifier.
+        :param aspects: Behavior-shaping aspects.
+
+        :returns: The free-form ack note describing the build + upload.
+    """
+    progress_reporter = BuildProgressReporter(
+        state=state, run_id=run_id, client_id=client_id)
+
+    outcome: BuildRunOutcome = execute_build_envelope(
+        state=state,
+        envelope=envelope,
+        local_run_id=local_run_id,
+        aspects=aspects.build_executor_aspects,
+        progress_reporter=progress_reporter,
+    )
+
+    upload_outcome = upload_build_results(
+        client=client,
+        state=state,
+        envelope=envelope,
+        result_dir=outcome.output_dir,
+        run_succeeded=outcome.succeeded,
+        aspects=aspects.result_uploader_aspects,
+    )
+
+    if outcome.succeeded:
+        run_note = "build run succeeded (output={})".format(
+            outcome.output_dir)
+    else:
+        run_note = "build run FAILED ({})".format(outcome.detail)
+
+    if upload_outcome.succeeded:
+        upload_note = "artifacts uploaded ({} files)".format(
+            upload_outcome.file_count)
+    else:
+        upload_note = "artifact upload INCOMPLETE ({})".format(
+            upload_outcome.detail)
+
+    rtnval = "ACCEPTED: {}; {}.".format(run_note, upload_note)
+    return rtnval
+
+
 def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
                         pending: Any,
                         aspects: DispatchConsumerAspects) -> bool:
@@ -398,45 +592,34 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         rtnval = False
         return rtnval
 
-    progress_reporter = ProgressReporter(
-        client=client,
-        run_id=run_id,
-        client_id=client_id,
-        output_dir=resolve_run_output_dir(state=state, run_id=run_id),
-        aspects=aspects.progress_reporter_aspects,
-    )
+    job_kind = _resolve_job_kind(envelope=envelope)
 
-    outcome: TestbaseRunOutcome = execute_job_envelope(
-        state=state,
-        envelope=envelope,
-        local_run_id=local_run_id,
-        aspects=aspects.executor_aspects,
-        progress_reporter=progress_reporter,
-    )
+    if job_kind == JOB_KIND_PROVISION:
+        # The provisioning executor is a later PR. A provision envelope
+        # must NOT crash the consumer -- it is acked with a rejection note
+        # so the service operator sees this client cannot run it.
+        logger.warning(
+            "pychestrate-client: provision jobs not yet supported by this "
+            "client (run_id=%s envelope_id=%s); acking with rejection.",
+            run_id, envelope_id,
+        )
+        acknowledge_dispatch(
+            client=client, run_id=run_id, envelope_id=envelope_id,
+            dispatch_attempt_id=dispatch_attempt_id, client_id=client_id,
+            local_run_id=local_run_id,
+            notes="REJECTED: provision jobs not yet supported by this "
+                  "client.")
+        rtnval = False
+        return rtnval
 
-    upload_outcome = upload_run_results(
-        client=client,
-        state=state,
-        envelope=envelope,
-        result_dir=outcome.output_dir,
-        run_succeeded=outcome.succeeded,
-        aspects=aspects.result_uploader_aspects,
-    )
-
-    if outcome.succeeded:
-        run_note = "testbase run succeeded (output={})".format(
-            outcome.output_dir)
+    if job_kind == JOB_KIND_BUILD:
+        notes = _handle_build_job(
+            client=client, state=state, envelope=envelope, run_id=run_id,
+            client_id=client_id, local_run_id=local_run_id, aspects=aspects)
     else:
-        run_note = "testbase run FAILED ({})".format(outcome.detail)
-
-    if upload_outcome.succeeded:
-        upload_note = "results uploaded ({} files)".format(
-            upload_outcome.file_count)
-    else:
-        upload_note = "result upload INCOMPLETE ({})".format(
-            upload_outcome.detail)
-
-    notes = "ACCEPTED: {}; {}.".format(run_note, upload_note)
+        notes = _handle_test_job(
+            client=client, state=state, envelope=envelope, run_id=run_id,
+            client_id=client_id, local_run_id=local_run_id, aspects=aspects)
 
     acknowledge_dispatch(
         client=client, run_id=run_id, envelope_id=envelope_id,
@@ -444,8 +627,8 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         local_run_id=local_run_id, notes=notes)
 
     logger.info(
-        "pychestrate-client: dispatch run_id=%s handled (status=%s).",
-        run_id, outcome.status,
+        "pychestrate-client: dispatch run_id=%s handled (job_kind=%s).",
+        run_id, job_kind,
     )
 
     rtnval = True

@@ -19,8 +19,15 @@
                    threads. As of M3 the dispatch-consumer loop closes the
                    orchestration loop on the client side: each dispatched job
                    runs with live progress streaming and pushes its result
-                   tree + completion manifest back to the service. No new
-                   subcommand is needed — ``run`` exercises the full loop.
+                   tree + completion manifest back to the service.
+
+                   As of M5 the dispatch-consumer loop branches on the
+                   envelope's ``job_kind``: a ``test`` job runs the testbase
+                   executor, a ``build`` job runs the build executor (source
+                   acquisition -> makefile runner -> artifact upload). Builds
+                   run through the same dispatch loop as tests — no new
+                   subcommand is needed; ``run`` exercises the full loop for
+                   both job kinds.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
@@ -273,7 +280,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pychestrate-client",
         description="Pychestrate pod-side runtime client "
-                    "(enroll, heartbeat, dispatch consumer + testbase executor).",
+                    "(enroll, heartbeat, dispatch consumer + testbase / "
+                    "build executors).",
     )
     parser.add_argument(
         "--state-dir",
