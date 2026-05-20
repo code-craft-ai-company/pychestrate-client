@@ -10,7 +10,11 @@
                    who want a liveness-only process; the ``run`` subcommand
                    is the normal pod-side mode — it runs the heartbeat loop
                    and the dispatch-consumer loop concurrently on two
-                   threads.
+                   threads. As of M3 the dispatch-consumer loop closes the
+                   orchestration loop on the client side: each dispatched job
+                   runs with live progress streaming and pushes its result
+                   tree + completion manifest back to the service. No new
+                   subcommand is needed — ``run`` exercises the full loop.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """

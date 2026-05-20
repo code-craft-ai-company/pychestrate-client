@@ -97,6 +97,34 @@ class _FakeDispatchGroup:
         return None
 
 
+class _FakeProgressGroup:
+    """
+        Records every progress frame posted by the consumer.
+    """
+
+    def __init__(self):
+        self.frames = []
+        return
+
+    def progress_post_frame(self, run_id, body, **kwargs):
+        self.frames.append((run_id, body))
+        return None
+
+
+class _FakeResultsGroup:
+    """
+        Records every result manifest posted by the consumer.
+    """
+
+    def __init__(self):
+        self.manifests = []
+        return
+
+    def results_post_complete(self, run_id, body, **kwargs):
+        self.manifests.append((run_id, body))
+        return None
+
+
 class _FakeClientsGroup:
     """
         Serves a scripted sequence of dispatch results.
@@ -128,6 +156,8 @@ class _FakeRestClient:
     def __init__(self, sequence):
         self.clients = _FakeClientsGroup(sequence)
         self.dispatch = _FakeDispatchGroup()
+        self.progress = _FakeProgressGroup()
+        self.results = _FakeResultsGroup()
         return
 
 
@@ -179,7 +209,7 @@ def test_handle_one_dispatch_verifies_executes_and_acks():
 
     executed = {"count": 0}
 
-    def _fake_execute(*, state, envelope, local_run_id, aspects):
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
         executed["count"] += 1
         outcome = TestbaseRunOutcome(
             status=RUN_STATUS_SUCCEEDED, exit_code=0,
@@ -228,7 +258,7 @@ def test_handle_one_dispatch_rejects_tampered_envelope_without_executing():
 
     executed = {"count": 0}
 
-    def _fake_execute(*, state, envelope, local_run_id, aspects):
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
         executed["count"] += 1
         return TestbaseRunOutcome(
             status=RUN_STATUS_SUCCEEDED, exit_code=0,
@@ -274,7 +304,7 @@ def test_consumer_loop_handles_dispatch_then_timeouts():
 
     executed = {"count": 0}
 
-    def _fake_execute(*, state, envelope, local_run_id, aspects):
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
         executed["count"] += 1
         return TestbaseRunOutcome(
             status=RUN_STATUS_SUCCEEDED, exit_code=0,
@@ -337,4 +367,161 @@ def test_consumer_loop_stops_on_predicate():
             testbase.assert_equal(iterations, 2)
     finally:
         dc_mod.build_client_from_state = original_build
+    return
+
+
+def test_handle_one_dispatch_streams_progress_uploads_and_completes():
+    # M3 end-to-end: a verified dispatch must run with progress streaming,
+    # upload its result tree, POST results/complete, and finally ack.
+    from automojo.pychestrate.client.result_uploader import (
+        ResultStoreDriver,
+        ResultUploaderAspects,
+    )
+    from automojo.pychestrate.client.testbase_executor import (
+        resolve_run_output_dir,
+    )
+
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(
+        serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    class _RecordingDriver(ResultStoreDriver):
+        def __init__(self):
+            self.transfers = []
+            return
+
+        def put_object(self, *, backend_driver, backend_key_prefix,
+                       relative_path, local_path):
+            self.transfers.append(relative_path)
+            return None
+
+    driver = _RecordingDriver()
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects,
+                      progress_reporter=None):
+        # Simulate testbase writing its result tree into the run output dir.
+        run_id = str(envelope.get("run_id", ""))
+        output_dir = resolve_run_output_dir(state=state, run_id=run_id)
+
+        import json as _json
+
+        summary = {"result": "PASSED", "detail": {
+            "passed": 3, "failed": 0, "skipped": 0, "errors": 0, "total": 3}}
+        with open(os.path.join(output_dir, "testrun_summary.json"), "w",
+                  encoding="utf-8") as sumf:
+            _json.dump(summary, sumf)
+        with open(os.path.join(output_dir, "testrun_results.json"), "w",
+                  encoding="utf-8") as resf:
+            resf.write("{}")
+
+        # Drive the progress reporter once so a frame is forwarded.
+        if progress_reporter is not None:
+            progress_reporter.start()
+            progress_reporter.stop()
+
+        outcome = TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir=output_dir, command=["testbase"], detail="ok")
+        return outcome
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key)
+            client = _FakeRestClient(sequence=[])
+
+            aspects = DispatchConsumerAspects(
+                result_uploader_aspects=ResultUploaderAspects(
+                    store_driver=driver),
+            )
+
+            executed_flag = handle_one_dispatch(
+                client=client,
+                state=state,
+                pending=pending,
+                signing_public_key=signing_key.public_key(),
+                signing_key_id=SIGNING_KEY_ID,
+                aspects=aspects,
+            )
+
+            testbase.assert_true(executed_flag)
+
+            # The result manifest was posted to results/complete.
+            testbase.assert_equal(len(client.results.manifests), 1)
+            posted_run_id, manifest = client.results.manifests[0]
+            testbase.assert_equal(posted_run_id, envelope["run_id"])
+            testbase.assert_equal(manifest.terminal_outcome, "success")
+
+            # The result tree was transferred via the store driver.
+            testbase.assert_true(len(driver.transfers) >= 2)
+
+            # The dispatch was acked last, after the upload completed.
+            testbase.assert_equal(len(client.dispatch.acks), 1)
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("results uploaded" in ack_body.notes)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+    return
+
+
+def test_handle_one_dispatch_upload_failure_still_acks():
+    # A result-upload failure (no store driver wired) must not abort the
+    # consumer: the run is still acked and the completion manifest posted.
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(
+        serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    from automojo.pychestrate.client.result_uploader import run_needs_upload_retry
+    from automojo.pychestrate.client.testbase_executor import (
+        resolve_run_output_dir,
+    )
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects,
+                      progress_reporter=None):
+        run_id = str(envelope.get("run_id", ""))
+        output_dir = resolve_run_output_dir(state=state, run_id=run_id)
+        with open(os.path.join(output_dir, "testrun_results.json"), "w",
+                  encoding="utf-8") as resf:
+            resf.write("{}")
+        outcome = TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir=output_dir, command=["testbase"], detail="ok")
+        return outcome
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key)
+            client = _FakeRestClient(sequence=[])
+
+            # No store driver wired -> upload cannot complete.
+            executed_flag = handle_one_dispatch(
+                client=client,
+                state=state,
+                pending=pending,
+                signing_public_key=signing_key.public_key(),
+                signing_key_id=SIGNING_KEY_ID,
+                aspects=DispatchConsumerAspects(),
+            )
+
+            testbase.assert_true(executed_flag)
+            # The dispatch is still acked.
+            testbase.assert_equal(len(client.dispatch.acks), 1)
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("ACCEPTED" in ack_body.notes)
+            testbase.assert_true("INCOMPLETE" in ack_body.notes)
+
+            # The run is marked locally for upload retry.
+            testbase.assert_true(run_needs_upload_retry(
+                state=state, run_id=envelope["run_id"]))
+    finally:
+        dc_mod.execute_job_envelope = original_execute
     return

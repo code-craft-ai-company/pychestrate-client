@@ -6,8 +6,15 @@
                    the Ed25519 signature, shells out to ``automojo-testbase``
                    to run the job, and acknowledges the dispatch.
 
-                   M2 scope: poll -> verify -> execute -> ack. Progress
-                   streaming and full result-tree upload are M3.
+                   M2 scope: poll -> verify -> execute -> ack.
+
+                   M3 scope: the loop now closes the orchestration loop on
+                   the client side --
+                   poll -> verify -> execute (with live progress streaming)
+                   -> upload result tree -> POST results/complete -> ack.
+                   Progress streaming is best-effort; the result-tree upload
+                   + ``results/complete`` POST are the authoritative run
+                   completion signal.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """
@@ -35,13 +42,24 @@ from automojo.pychestrate.client.envelope_verifier import (
     verify_signed_envelope,
 )
 from automojo.pychestrate.client.heartbeat import build_client_from_state
+from automojo.pychestrate.client.progress_reporter import (
+    DEFAULT_PROGRESS_REPORTER_ASPECTS,
+    ProgressReporter,
+    ProgressReporterAspects,
+)
 from automojo.pychestrate.client.pychestratemtlsclient import PychestrateMtlsClient
+from automojo.pychestrate.client.result_uploader import (
+    DEFAULT_RESULT_UPLOADER_ASPECTS,
+    ResultUploaderAspects,
+    upload_run_results,
+)
 from automojo.pychestrate.client.state import ClientState
 from automojo.pychestrate.client.testbase_executor import (
     DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
     TestbaseExecutorAspects,
     TestbaseRunOutcome,
     execute_job_envelope,
+    resolve_run_output_dir,
 )
 
 
@@ -70,7 +88,11 @@ class DispatchConsumerAspects:
                  max_iterations: Optional[int] = None,
                  sleep_func: Optional[Callable[[float], None]] = None,
                  executor_aspects: TestbaseExecutorAspects =
-                 DEFAULT_TESTBASE_EXECUTOR_ASPECTS):
+                 DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
+                 progress_reporter_aspects: ProgressReporterAspects =
+                 DEFAULT_PROGRESS_REPORTER_ASPECTS,
+                 result_uploader_aspects: ResultUploaderAspects =
+                 DEFAULT_RESULT_UPLOADER_ASPECTS):
         """
             Initializes a :class:`DispatchConsumerAspects` instance.
 
@@ -87,6 +109,12 @@ class DispatchConsumerAspects:
                                :func:`time.sleep`.
             :param executor_aspects: Aspects forwarded to the testbase
                                      executor for each dispatched job.
+            :param progress_reporter_aspects: Aspects forwarded to the
+                                              progress reporter created for
+                                              each dispatched job.
+            :param result_uploader_aspects: Aspects forwarded to the result
+                                            uploader run after each
+                                            dispatched job.
 
             :raises: BadParameterError
         """
@@ -111,6 +139,8 @@ class DispatchConsumerAspects:
         self._max_iterations = max_iterations
         self._sleep_func = sleep_func if sleep_func is not None else time.sleep
         self._executor_aspects = executor_aspects
+        self._progress_reporter_aspects = progress_reporter_aspects
+        self._result_uploader_aspects = result_uploader_aspects
         return
 
     @property
@@ -136,6 +166,14 @@ class DispatchConsumerAspects:
     @property
     def executor_aspects(self) -> TestbaseExecutorAspects:
         return self._executor_aspects
+
+    @property
+    def progress_reporter_aspects(self) -> ProgressReporterAspects:
+        return self._progress_reporter_aspects
+
+    @property
+    def result_uploader_aspects(self) -> ResultUploaderAspects:
+        return self._result_uploader_aspects
 
 
 DEFAULT_DISPATCH_CONSUMER_ASPECTS = DispatchConsumerAspects()
@@ -286,8 +324,12 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
             1. Verify the envelope's Ed25519 signature. On failure: log
                loudly, ack with a rejection note, do NOT execute.
             2. On a verified envelope: shell out to testbase to run the
-               job (resilient — never crashes the consumer).
-            3. Ack the dispatch with the execution outcome.
+               job (resilient — never crashes the consumer), streaming live
+               progress to the service for the lifetime of the run.
+            3. Upload the result tree to the shared results backend and POST
+               ``results/complete`` (resilient — a failed upload is marked
+               on the local run record for retry).
+            4. Ack the dispatch with the execution + upload outcome.
 
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param state: The :class:`ClientState`.
@@ -352,18 +394,45 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         rtnval = False
         return rtnval
 
+    progress_reporter = ProgressReporter(
+        client=client,
+        run_id=run_id,
+        client_id=client_id,
+        output_dir=resolve_run_output_dir(state=state, run_id=run_id),
+        aspects=aspects.progress_reporter_aspects,
+    )
+
     outcome: TestbaseRunOutcome = execute_job_envelope(
         state=state,
         envelope=envelope,
         local_run_id=local_run_id,
         aspects=aspects.executor_aspects,
+        progress_reporter=progress_reporter,
+    )
+
+    upload_outcome = upload_run_results(
+        client=client,
+        state=state,
+        envelope=envelope,
+        result_dir=outcome.output_dir,
+        run_succeeded=outcome.succeeded,
+        aspects=aspects.result_uploader_aspects,
     )
 
     if outcome.succeeded:
-        notes = "ACCEPTED: testbase run succeeded (output={}).".format(
+        run_note = "testbase run succeeded (output={})".format(
             outcome.output_dir)
     else:
-        notes = "ACCEPTED: testbase run FAILED ({}).".format(outcome.detail)
+        run_note = "testbase run FAILED ({})".format(outcome.detail)
+
+    if upload_outcome.succeeded:
+        upload_note = "results uploaded ({} files)".format(
+            upload_outcome.file_count)
+    else:
+        upload_note = "result upload INCOMPLETE ({})".format(
+            upload_outcome.detail)
+
+    notes = "ACCEPTED: {}; {}.".format(run_note, upload_note)
 
     acknowledge_dispatch(
         client=client, run_id=run_id, envelope_id=envelope_id,

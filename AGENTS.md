@@ -93,8 +93,18 @@ For local development:
 
 # Project Specific Rules
 
-- **M1 delivered enrollment + heartbeat. M2 delivers dispatch consumption +
-  testbase invocation.** Progress + result push remains M3.
+- **M1 delivered enrollment + heartbeat. M2 delivered dispatch consumption +
+  testbase invocation. M3 delivers live progress streaming + result-tree
+  upload + completion manifest** -- the dispatch-consumer loop now closes the
+  orchestration loop on the client side.
+- The result uploader writes the testbase result tree DIRECTLY to the shared
+  results object store (per the `5-shared-results-backend` design) via an
+  injectable `ResultStoreDriver` (Aspects pattern). The signed envelope's
+  `JobResultsLocator` supplies only `backend_key_prefix` + `backend_driver`;
+  the concrete object-store binding + credentials are provisioned at the
+  site / pod level -- there is no per-artifact HTTP upload endpoint on the
+  REST surface. When no driver is wired the run is marked `upload_failed`
+  locally for retry.
 - Do not bypass the codegen'd REST client. If an operation is missing from
   `automojo-restclient-pychestrate`, halt and report rather than hand-rolling
   the HTTP call.
