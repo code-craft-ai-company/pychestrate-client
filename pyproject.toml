@@ -16,21 +16,21 @@ keywords = [
     "client",
     "automation"
 ]
-packages = [{include="automojo", from="source/packages"}]
+packages = [{include="ccai", from="source/packages"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-automojo-errors = { git = "https://github.com/automationmojo/automojo-errors.git", branch = "main" }
-automojo-credentials = { git = "https://github.com/automationmojo/automojo-credentials.git", branch = "main" }
-automojo-restclient-base = { git = "https://github.com/automationmojo/automojo-restclient-base.git", branch = "main" }
-automojo-testbase = { git = "https://github.com/automationmojo/automojo-testbase.git", branch = "main" }
-automojo-restclient-pychestrate = { git = "https://github.com/automationmojo/automojo-restclient-pychestrate.git", branch = "main" }
+codecraftai-errors = { git = "https://github.com/automationmojo/codecraftai-errors.git", branch = "main" }
+codecraftai-credentials = { git = "https://github.com/automationmojo/codecraftai-credentials.git", branch = "main" }
+codecraftai-restclient-base = { git = "https://github.com/automationmojo/codecraftai-restclient-base.git", branch = "main" }
+codecraftai-testbase = { git = "https://github.com/automationmojo/codecraftai-testbase.git", branch = "main" }
+codecraftai-restclient-pychestrate = { git = "https://github.com/automationmojo/codecraftai-restclient-pychestrate.git", branch = "main" }
 cryptography = ">=42.0.0"
 
 [tool.poetry.group.dev.dependencies]
 
 [tool.poetry.scripts]
-pychestrate-client = "automojo.pychestrate.client.cli:main"
+pychestrate-client = "ccai.pychestrate.client.cli:main"
 
 [build-system]
 requires = ["poetry-core"]
