@@ -6,11 +6,12 @@
                    ``heartbeat``, ``version``) plus the M2 subcommands
                    (``install-signing-key``, ``run``).
 
-                   As of M4 the client fetches the envelope signing-key set
-                   automatically (bundled in the enrollment-redeem response,
-                   refreshed from ``GET /api/v1/envelope-signing-keys`` on an
-                   unknown key id), so ``install-signing-key`` is retained
-                   only for air-gapped / fallback installs.
+                   The client fetches the envelope signing keys from the
+                   service automatically: the RFC 7517 JWK Set from the
+                   service's JWKS endpoint is the first-class source, backed
+                   by the set bundled in the enrollment-redeem response.
+                   ``install-signing-key`` is therefore an operator override
+                   for air-gapped or pinned pods, not the happy path.
 
                    The ``heartbeat`` subcommand is retained for operators
                    who want a liveness-only process; the ``run`` subcommand
@@ -144,13 +145,14 @@ def _cmd_install_signing_key(args: argparse.Namespace) -> int:
         into the client state directory and records its key id in the
         config.
 
-        NOTE: this subcommand is no longer part of the happy path. As of
-        M4 the client fetches the JWKS-style signing-key set automatically
-        — it is bundled in the enrollment-redeem response and refreshed
-        from ``GET /api/v1/envelope-signing-keys`` whenever an envelope is
-        signed by an unknown key id. This subcommand is retained only for
-        air-gapped / fallback installs where the operator must seed the
-        single-file signing key out-of-band.
+        NOTE: this subcommand is not the happy path. The client normally
+        fetches the service's RFC 7517 JWK Set from its JWKS endpoint and
+        caches it locally. Installing a key here is an explicit operator
+        OVERRIDE: while the installed key file is present it is the only
+        trust anchor the client will use, the service JWK Set is not
+        consulted, and envelopes signed by any other key id are refused.
+        Use it for air-gapped pods or to pin a pod to one signing key;
+        remove the installed key file to return to JWKS-based resolution.
 
         :param args: Parsed CLI arguments.
 
@@ -189,6 +191,14 @@ def _cmd_install_signing_key(args: argparse.Namespace) -> int:
     print("pychestrate-client: envelope signing key installed.")
     print("    key_id: {}".format(args.key_id))
     print("    path: {}".format(state.envelope_signing_key_path))
+    print("")
+    print("This installed key is an OPERATOR OVERRIDE. While it is present "
+          "the client")
+    print("verifies job envelopes ONLY against it and does not consult the "
+          "service")
+    print("JWK Set. Envelopes signed by any other key id will be refused.")
+    print("Remove {} to return to".format(state.envelope_signing_key_path))
+    print("JWKS-based key resolution.")
 
     rtnval = 0
     return rtnval
@@ -323,9 +333,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     install_key_parser = subparsers.add_parser(
         "install-signing-key",
-        help="Install the service's Ed25519 envelope signing public key "
-             "out-of-band (air-gapped / fallback only; the client otherwise "
-             "fetches the signing-key set automatically).",
+        help="Pin envelope verification to an out-of-band Ed25519 signing "
+             "public key (operator override; the client otherwise fetches "
+             "the service's JWK Set automatically).",
     )
     install_key_parser.add_argument("--key-file", required=True,
                                     help="Path to the PEM-encoded Ed25519 "

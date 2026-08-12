@@ -5,20 +5,22 @@
                    set the dispatch consumer verifies signed job envelopes
                    against.
 
-                   M4 scope: the Pychestrate service now delivers its signing
-                   public keys two ways -- bundled inside the
-                   enrollment-redeem response (``envelope_signing_keys``) and
-                   through the dedicated ``GET /api/v1/envelope-signing-keys``
-                   endpoint. This module owns persisting that set to the
-                   client state directory and refreshing it on demand. The
-                   manual ``install-signing-key`` command is no longer part of
-                   the happy path -- it is retained only for air-gapped /
-                   fallback installs.
+                   This is the pre-JWKS delivery path: the service bundles
+                   ``envelope_signing_keys`` inside the enrollment-redeem
+                   response and serves the same set from
+                   ``GET /api/v1/envelope-signing-keys``. This module owns
+                   persisting that set to the client state directory and
+                   refreshing it on demand.
 
-                   The refresh path is lazy: when :mod:`envelope_verifier`
-                   encounters an envelope signed by a ``key_id`` the persisted
-                   set does not carry, it triggers a single refresh from the
-                   service before failing closed.
+                   The service's RFC 7517 JWK Set is now the first-class
+                   source for envelope verification keys -- see
+                   :mod:`automojo.pychestrate.client.jwks`. The set this
+                   module manages is still used: the enrollment-bundled copy
+                   lets a freshly-enrolled client verify envelopes with no
+                   network call at all, and the endpoint refresh is the
+                   fallback for services that expose no JWKS endpoint. The
+                   full resolution order lives on
+                   :func:`envelope_verifier.resolve_envelope_signing_key`.
 
     .. moduleauthor:: Myron Walker <myron.walker@gmail.com>
 """

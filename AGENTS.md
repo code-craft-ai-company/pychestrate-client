@@ -111,9 +111,44 @@ For local development:
 - The codegen'd REST client is consumed as a git source dependency in
   `pyproject.toml`, matching the other `automojo-*` deps.
 - The dispatch consumer MUST verify the Ed25519 signature on every job
-  envelope before executing it. The signing public key is installed
-  out-of-band via `pychestrate-client install-signing-key` until the
-  service exposes a JWKS / signing-public-key endpoint.
+  envelope before executing it, and MUST refuse to execute an envelope it
+  cannot verify.
+- The service publishes its envelope signing public keys as an RFC 7517
+  JWK Set (JWKS) of OKP / Ed25519 keys. Fetching that JWK Set is the
+  first-class way the client obtains a verification key. It is fetched
+  THROUGH the codegen'd REST client (never a hand-rolled HTTP call),
+  normalized to PEM, and cached in the state directory as
+  `envelope-signing-jwks.json` with the time it was fetched.
+- **Key-resolution order** (implemented in
+  `envelope_verifier.resolve_envelope_signing_key`, documented in the
+  README; keep all three in sync when changing it):
+  1. Operator-installed key (`pychestrate-client install-signing-key`) --
+     an explicit override. While installed it is the ONLY trust anchor:
+     the JWK Set is not consulted and an envelope signed by any other key
+     id is refused.
+  2. Fresh cached JWK Set (`envelope-signing-jwks.json`).
+  3. Enrollment-bundled signing-key set (`envelope-signing-keys.json`) --
+     local and already service-delivered, so it is checked before any
+     network call.
+  4. Live JWK Set fetch from the service's JWKS endpoint (picks up key
+     rotation), written into the cache.
+  5. Stale cached JWK Set -- availability fallback when the live fetch did
+     not resolve the id. Ed25519 public keys do not expire.
+  6. Pre-JWKS `GET /api/v1/envelope-signing-keys` refresh, retained for
+     services without a JWKS endpoint.
+- A key source that is unusable *by configuration* (the codegen'd REST
+  client exposes no JWKS operation, the service returned a malformed
+  document) is skipped so the next source can answer. Transport failures
+  are NOT swallowed -- they propagate so the dispatch-consumer loop backs
+  off and retries instead of permanently rejecting a legitimate job.
+- **Open item:** the exact JWKS method name on the codegen'd REST client
+  depends on how `automojo-restclient-pychestrate` is generated from the
+  service's OpenAPI document. `jwks.DEFAULT_JWKS_OPERATION_CANDIDATES`
+  probes the plausible generated names and raises an actionable
+  `ConfigurationError` naming every candidate it tried when none is
+  present -- it never falls back to a hand-rolled HTTP call. Once the REST
+  client is regenerated against the JWKS endpoint, confirm the generated
+  name and pin that tuple to it.
 
 # Pull Request Guidelines
 

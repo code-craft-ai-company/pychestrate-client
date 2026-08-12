@@ -69,6 +69,11 @@ from automojo.pychestrate.client.envelope_verifier import (
     verify_dispatch_envelope,
 )
 from automojo.pychestrate.client.heartbeat import build_client_from_state
+from automojo.pychestrate.client.jwks import (
+    DEFAULT_JWKS_ASPECTS,
+    JwksAspects,
+    refresh_jwks,
+)
 from automojo.pychestrate.client.progress_reporter import (
     DEFAULT_PROGRESS_REPORTER_ASPECTS,
     ProgressReporter,
@@ -138,7 +143,8 @@ class DispatchConsumerAspects:
                  progress_reporter_aspects: ProgressReporterAspects =
                  DEFAULT_PROGRESS_REPORTER_ASPECTS,
                  result_uploader_aspects: ResultUploaderAspects =
-                 DEFAULT_RESULT_UPLOADER_ASPECTS):
+                 DEFAULT_RESULT_UPLOADER_ASPECTS,
+                 jwks_aspects: JwksAspects = DEFAULT_JWKS_ASPECTS):
         """
             Initializes a :class:`DispatchConsumerAspects` instance.
 
@@ -169,6 +175,9 @@ class DispatchConsumerAspects:
             :param result_uploader_aspects: Aspects forwarded to the result
                                             uploader run after each
                                             dispatched job.
+            :param jwks_aspects: Aspects controlling retrieval and caching
+                                 of the service's RFC 7517 JWK Set of
+                                 envelope signing public keys.
 
             :raises: BadParameterError
         """
@@ -197,6 +206,7 @@ class DispatchConsumerAspects:
         self._provision_executor_aspects = provision_executor_aspects
         self._progress_reporter_aspects = progress_reporter_aspects
         self._result_uploader_aspects = result_uploader_aspects
+        self._jwks_aspects = jwks_aspects
         return
 
     @property
@@ -238,6 +248,10 @@ class DispatchConsumerAspects:
     @property
     def result_uploader_aspects(self) -> ResultUploaderAspects:
         return self._result_uploader_aspects
+
+    @property
+    def jwks_aspects(self) -> JwksAspects:
+        return self._jwks_aspects
 
 
 DEFAULT_DISPATCH_CONSUMER_ASPECTS = DispatchConsumerAspects()
@@ -591,12 +605,13 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         The flow is:
 
             1. Verify the envelope's Ed25519 signature. The signing key is
-               resolved from the persisted JWKS-style signing-key set by
-               the envelope's ``signature_key_id``; an unknown key id
-               triggers a single refresh from
-               ``GET /api/v1/envelope-signing-keys`` before failing. On a
-               verification failure: log loudly, ack with a rejection note,
-               do NOT execute.
+               resolved for the envelope's ``signature_key_id`` through the
+               documented order in
+               :func:`envelope_verifier.resolve_envelope_signing_key`: an
+               operator-installed key overrides everything, otherwise the
+               RFC 7517 JWK Set fetched and cached from the service's JWKS
+               endpoint is used. On a verification failure: log loudly, ack
+               with a rejection note, do NOT execute.
             2. On a verified envelope: shell out to testbase to run the
                job (resilient — never crashes the consumer), streaming live
                progress to the service for the lifetime of the run.
@@ -639,6 +654,11 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         rtnval = False
         return rtnval
 
+    def _refresh_jwks() -> Any:
+        rtnval = refresh_jwks(
+            client=client, state=state, aspects=aspects.jwks_aspects)
+        return rtnval
+
     def _refresh_signing_keys() -> Any:
         rtnval = refresh_signing_keys(client=client, state=state)
         return rtnval
@@ -649,6 +669,8 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
         signature_hex=signature_hex,
         signature_key_id=signature_key_id,
         refresh_func=_refresh_signing_keys,
+        jwks_refresh_func=_refresh_jwks,
+        cache_ttl_seconds=aspects.jwks_aspects.cache_ttl_seconds,
     )
 
     if not verification.valid:
@@ -714,11 +736,11 @@ def run_dispatch_consumer_loop(state: ClientState,
         back-off (clamped at ``max_backoff_seconds``).
 
         The consumer fails closed on the envelope signing keys: each
-        dispatched envelope is verified against the persisted JWKS-style
-        signing-key set, resolved by the envelope's ``signature_key_id``.
-        An unknown key id triggers a single refresh from
-        ``GET /api/v1/envelope-signing-keys``; an envelope whose key still
-        cannot be resolved is rejected without execution.
+        dispatched envelope is verified against a key resolved for its
+        ``signature_key_id``, normally from the RFC 7517 JWK Set fetched and
+        cached from the service's JWKS endpoint (an operator-installed key
+        overrides it). An envelope whose key no source can resolve is
+        rejected without execution.
 
         :param state: The :class:`ClientState` to drive the client from.
         :param aspects: Behavior-shaping aspects.
