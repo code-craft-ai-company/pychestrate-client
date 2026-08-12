@@ -50,6 +50,8 @@ Repository Structure
 - ``repository-setup/`` - Repository homing and setup scripts.
 - ``source/packages/`` - Package source code (``automojo.pychestrate.client.*``).
 - ``source/testroots/automojo/`` - TestBase test roots.
+- ``specs/`` - Specifications for spec-based development. Start at
+  ``specs/00-00-specification-conventions.rst``.
 - ``userguide/`` - Standards, conventions, and quick-start docs.
 
 Environment Setup
