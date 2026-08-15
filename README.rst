@@ -108,7 +108,10 @@ Run TestBase tests:
 Standards and Conventions
 =========================
 
-- Coding standards live at ``/Users/myron/repos/CLAUDE.md``.
+- Coding standards follow the Automation Mojo organization standing guidance
+  (the org-level ``CLAUDE.md`` that applies to every ``automojo-*``
+  repository). Repository-local standards and convention documents belong in
+  ``userguide/``; see ``AGENTS.md`` for the short form of the naming rules.
 - The package namespace is ``automojo.pychestrate.client.*`` (product-first).
 - The runtime is "client", never "agent".
 

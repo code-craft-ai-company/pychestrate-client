@@ -56,12 +56,20 @@ File to test: `source/packages/automojo/pychestrate/client/enrollment.py`
 Test file location: `source/testroots/automojo/tests/pychestrate/client/test_enrollment.py`
 
 # Code Naming Conventions
-Follow the conventions described at `/Users/myron/repos/CLAUDE.md`:
+Follow the Automation Mojo organization standing guidance for Python coding
+standards (the org-level `CLAUDE.md` that applies to every `automojo-*`
+repository). The short form:
 
 - `snake_case` for functions, methods, parameters.
 - Class file names: all-lowercase, no underscores, named after the class.
 - Always pass named parameters by name.
 - Return statements assign to a local `rtnval` before returning.
+
+Repository-local standards and convention documents belong in `userguide/`.
+That folder currently carries only `01-00-quickstart.rst` - the `10-0x`
+standards documents that the sibling Pychestrate repositories carry have not
+been ported here yet, so the org standing guidance is authoritative for
+anything the list above does not cover.
 
 # Code Structure
 - `source/packages/automojo/pychestrate/client/` - the runtime package
@@ -77,8 +85,9 @@ interact with a remote service. Therefore the code must prioritize:
 * readability over conciseness
 * explicit error handling over silent failures
 
-For all the code in this repository, follow the coding standards specified at
-`/Users/myron/repos/CLAUDE.md`.
+For all the code in this repository, follow the Automation Mojo organization
+standing guidance for Python coding standards, together with any standards
+documents carried under `userguide/` (see "Code Naming Conventions" above).
 
 # Environment Setup
 
