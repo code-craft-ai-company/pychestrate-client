@@ -4,6 +4,7 @@
     mocked; no real network traffic or testbase invocation is performed.
 """
 
+import base64
 import os
 import tempfile
 
@@ -390,6 +391,112 @@ def test_handle_one_dispatch_refreshes_signing_keys_on_unknown_key():
             testbase.assert_equal(client.dispatch.signing_key_calls, 1)
             # The refreshed set is now persisted to disk.
             testbase.assert_true(state.has_envelope_signing_keys())
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("ACCEPTED" in ack_body.notes)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+    return
+
+
+def _jwk_for(signing_private_key, key_id=SIGNING_KEY_ID):
+    """
+        Returns an RFC 7517 / RFC 8037 OKP Ed25519 JWK for a private key.
+    """
+    raw_public = signing_private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    encoded = base64.urlsafe_b64encode(raw_public).decode("ascii")
+
+    rtnval = {
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "alg": "EdDSA",
+        "use": "sig",
+        "kid": key_id,
+        "x": encoded.rstrip("="),
+    }
+    return rtnval
+
+
+class _FakeJwksDispatchGroup(_FakeDispatchGroup):
+    """
+        A dispatch group that additionally serves the service's RFC 7517
+        JWK Set, as a codegen'd client generated against a JWKS-enabled
+        service would.
+    """
+
+    def __init__(self, jwks_document, signing_keys=None):
+        super().__init__(signing_keys=signing_keys)
+        self._jwks_document = jwks_document
+        self.jwks_calls = 0
+        return
+
+    def envelope_signing_keys_jwks(self, **kwargs):
+        self.jwks_calls += 1
+        rtnval = self._jwks_document
+        return rtnval
+
+
+class _FakeJwksRestClient(_FakeRestClient):
+    """
+        Stand-in for a client talking to a JWKS-enabled service.
+    """
+
+    def __init__(self, sequence, jwks_document, signing_keys=None):
+        super().__init__(sequence=sequence, signing_keys=signing_keys)
+        self.dispatch = _FakeJwksDispatchGroup(
+            jwks_document=jwks_document, signing_keys=signing_keys)
+        return
+
+
+def test_handle_one_dispatch_resolves_the_key_from_the_service_jwks():
+    # The first-class fetched source: with no local key material at all the
+    # consumer fetches the service JWK Set, caches it, and executes.
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(
+        serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    executed = {"count": 0}
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects,
+                      progress_reporter=None):
+        executed["count"] += 1
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key,
+                persist_signing_keys=False)
+            client = _FakeJwksRestClient(
+                sequence=[],
+                jwks_document={"keys": [_jwk_for(signing_key)]})
+
+            executed_flag = handle_one_dispatch(
+                client=client,
+                state=state,
+                pending=pending,
+                aspects=DispatchConsumerAspects(),
+            )
+
+            testbase.assert_true(executed_flag)
+            testbase.assert_equal(executed["count"], 1)
+
+            # The JWK Set answered, so the pre-JWKS signing-keys endpoint
+            # was never called.
+            testbase.assert_equal(client.dispatch.jwks_calls, 1)
+            testbase.assert_equal(client.dispatch.signing_key_calls, 0)
+
+            # The fetched JWK Set is cached for subsequent dispatches.
+            testbase.assert_true(state.has_envelope_signing_jwks())
+
             _, ack_body = client.dispatch.acks[0]
             testbase.assert_true("ACCEPTED" in ack_body.notes)
     finally:

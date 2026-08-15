@@ -29,6 +29,13 @@ FILENAME_SERVICE_CA = "service-ca.crt"
 FILENAME_CONFIG = "config.json"
 FILENAME_ENVELOPE_SIGNING_KEY = "envelope-signing-public-key.pem"
 FILENAME_ENVELOPE_SIGNING_KEYS = "envelope-signing-keys.json"
+FILENAME_ENVELOPE_SIGNING_JWKS = "envelope-signing-jwks.json"
+
+#: Config key recording the key id an operator installed the single-file
+#: envelope signing public key under. The presence of that key file makes
+#: the installed key an operator override, and this id is what the override
+#: is scoped to.
+CONFIG_KEY_ENVELOPE_SIGNING_KEY_ID = "envelope_signing_key_id"
 
 #: Sub-directory under the state directory where the dispatch consumer
 #: records the local outcome of each executed job (M2 records the
@@ -49,6 +56,17 @@ class ClientState:
                 client.crt      - PEM-encoded signed client certificate (mode 0644)
                 service-ca.crt  - PEM-encoded CA chain used to verify the server
                 config.json     - service URL, client name, other settings
+
+                envelope-signing-jwks.json
+                                - TTL-stamped cache of the RFC 7517 JWK Set
+                                  fetched from the service's JWKS endpoint
+                envelope-signing-keys.json
+                                - signing-key set bundled in the
+                                  enrollment-redeem response
+                envelope-signing-public-key.pem
+                                - operator-installed signing key; its
+                                  presence pins envelope verification to
+                                  that one key
     """
 
     def __init__(self, state_dir: Optional[str] = None):
@@ -150,6 +168,24 @@ class ClientState:
                       file.
         """
         rtnval = os.path.join(self._state_dir, FILENAME_ENVELOPE_SIGNING_KEYS)
+        return rtnval
+
+    @property
+    def envelope_signing_jwks_path(self) -> str:
+        """
+            Gets the on-disk path where the RFC 7517 JWK Set fetched from
+            the service's JWKS endpoint is cached.
+
+            The cache holds the signing-key entries derived from the fetched
+            JWK Set plus the ``fetched_at`` stamp used to decide when the
+            set must be re-fetched. It is the first-class source the
+            dispatch consumer resolves envelope signing keys from when no
+            operator override is installed.
+
+            :returns: The full path to the ``envelope-signing-jwks.json``
+                      file.
+        """
+        rtnval = os.path.join(self._state_dir, FILENAME_ENVELOPE_SIGNING_JWKS)
         return rtnval
 
     @property
@@ -403,6 +439,121 @@ class ClientState:
             :returns: True if the signing-key-set file is present.
         """
         rtnval = os.path.isfile(self.envelope_signing_keys_path)
+        return rtnval
+
+    def write_envelope_signing_jwks(self, keys: List[Dict[str, Any]],
+                                    fetched_at: str) -> None:
+        """
+            Persists the signing-key entries derived from the service's
+            RFC 7517 JWK Set, stamped with the time they were fetched.
+
+            The ``fetched_at`` stamp is what makes this a cache rather than
+            a second copy of the key set: the verifier serves the cached
+            entries until the stamp ages past the configured time-to-live,
+            then re-fetches so a service-side rotation is picked up.
+
+            :param keys: The normalized signing-key dictionaries derived
+                         from the fetched JWK Set.
+            :param fetched_at: An RFC 3339 timestamp naming when the JWK Set
+                               was fetched from the service.
+
+            :returns: None
+        """
+        path = self.envelope_signing_jwks_path
+        document = {"fetched_at": fetched_at, "keys": keys}
+        with open(path, "w", encoding="utf-8") as jwksf:
+            json.dump(document, jwksf, indent=4, sort_keys=True)
+            jwksf.write(os.linesep)
+        os.chmod(path, 0o644)
+        return
+
+    def read_envelope_signing_jwks(self) -> Dict[str, Any]:
+        """
+            Reads the cached JWK Set signing-key document from disk.
+
+            :returns: A dictionary carrying ``fetched_at`` and ``keys``.
+            :raises: ConfigurationError when the file is missing or is not a
+                     valid JWKS cache document.
+        """
+        path = self.envelope_signing_jwks_path
+        if not os.path.isfile(path):
+            errmsg_lines = [
+                "The pychestrate-client state directory does not contain a "
+                "cached envelope signing JWK Set.",
+                "    expected: {}".format(path),
+                "The set is fetched automatically from the service's JWKS "
+                "endpoint the first time an envelope signing key must be "
+                "resolved.",
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise ConfigurationError(errmsg)
+
+        try:
+            with open(path, "r", encoding="utf-8") as jwksf:
+                loaded = json.load(jwksf)
+        except (ValueError, OSError) as readerr:
+            errmsg_lines = [
+                "The pychestrate-client cached envelope signing JWK Set "
+                "could not be read.",
+                "    path: {}".format(path),
+                "    reason: {}".format(readerr),
+            ]
+            errmsg = os.linesep.join(errmsg_lines)
+            raise ConfigurationError(errmsg) from readerr
+
+        if not isinstance(loaded, dict):
+            errmsg = ("The cached envelope signing JWK Set at {} is not a "
+                      "JSON object.".format(path))
+            raise ConfigurationError(errmsg)
+
+        keys = loaded.get("keys", None)
+        if not isinstance(keys, list):
+            errmsg = ("The cached envelope signing JWK Set at {} does not "
+                      "carry a 'keys' list.".format(path))
+            raise ConfigurationError(errmsg)
+
+        rtnval = loaded
+        return rtnval
+
+    def has_envelope_signing_jwks(self) -> bool:
+        """
+            Returns True when a JWK Set fetched from the service has been
+            cached into the state directory.
+
+            :returns: True if the JWKS cache file is present.
+        """
+        rtnval = os.path.isfile(self.envelope_signing_jwks_path)
+        return rtnval
+
+    def read_installed_signing_key_id(self) -> Optional[str]:
+        """
+            Reads the key id an operator installed the single-file envelope
+            signing public key under.
+
+            A client that has never been enrolled has no ``config.json`` at
+            all, so a missing config is reported as "no installed key id"
+            rather than as an error.
+
+            :returns: The installed key id, or ``None`` when no key id has
+                      been recorded.
+        """
+        if not os.path.isfile(self.config_path):
+            rtnval = None
+            return rtnval
+
+        config = self.read_config()
+
+        recorded = config.get(CONFIG_KEY_ENVELOPE_SIGNING_KEY_ID, None)
+        if recorded is None:
+            rtnval = None
+            return rtnval
+
+        candidate = str(recorded)
+        if len(candidate) == 0:
+            rtnval = None
+            return rtnval
+
+        rtnval = candidate
         return rtnval
 
     def read_config(self) -> Dict[str, Any]:

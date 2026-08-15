@@ -56,3 +56,52 @@ def test_state_is_enrolled_when_all_files_present():
 
         testbase.assert_true(state.is_enrolled())
     return
+
+
+def test_state_round_trips_the_jwks_cache():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+
+        testbase.assert_false(state.has_envelope_signing_jwks())
+
+        entry = {
+            "key_id": "envelope-key-2026",
+            "algorithm": "ed25519",
+            "public_key_pem": "-----BEGIN PUBLIC KEY-----\nKK\n"
+                              "-----END PUBLIC KEY-----",
+            "status": "active",
+            "source": "jwks",
+        }
+        state.write_envelope_signing_jwks(
+            keys=[entry], fetched_at="2026-08-12T00:00:00+00:00")
+
+        testbase.assert_true(state.has_envelope_signing_jwks())
+
+        document = state.read_envelope_signing_jwks()
+        testbase.assert_equal(
+            document["fetched_at"], "2026-08-12T00:00:00+00:00")
+        testbase.assert_equal(len(document["keys"]), 1)
+        testbase.assert_equal(
+            document["keys"][0]["key_id"], "envelope-key-2026")
+    return
+
+
+def test_state_reads_the_installed_signing_key_id():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+
+        # A client that was never enrolled has no config at all.
+        testbase.assert_true(state.read_installed_signing_key_id() is None)
+
+        state.write_config(config={"host": "svc"})
+        testbase.assert_true(state.read_installed_signing_key_id() is None)
+
+        state.write_config(config={
+            "host": "svc",
+            "envelope_signing_key_id": "envelope-key-2026",
+        })
+        testbase.assert_equal(
+            state.read_installed_signing_key_id(), "envelope-key-2026")
+    return
