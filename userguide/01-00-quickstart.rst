@@ -64,7 +64,7 @@ shuts down gracefully on ``SIGTERM`` or ``SIGINT``.
 
 In M2 and M3 the ``heartbeat`` subcommand will be folded into a full
 ``run`` subcommand that also long-polls for dispatched jobs, shells out
-to ``automojo-testbase`` to execute them, and pushes progress + results
+to ``codecraftai-testbase`` to execute them, and pushes progress + results
 back to the service.
 
 State Directory Layout

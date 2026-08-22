@@ -58,7 +58,7 @@ signal that a run completed.
 Scope
 =====
 
-- Live progress capture from a running ``automojo-testbase`` job, and its
+- Live progress capture from a running ``codecraftai-testbase`` job, and its
   delivery to the service.
 - Walking a finished result tree and transferring its bytes to the shared
   results backend.
@@ -89,7 +89,7 @@ Progress frame
     entries that appeared since the previous poll.
 
 Result tree
-    The directory ``automojo-testbase`` writes its run output into,
+    The directory ``codecraftai-testbase`` writes its run output into,
     ``<state_dir>/runs/<run_id>/output``. For M3 the whole tree is the unit
     of upload.
 
@@ -304,7 +304,7 @@ Verification
 ============
 
 Existing coverage under
-``source/testroots/automojo/tests/pychestrate/client/``:
+``source/testroots/ccai/tests/pychestrate/client/``:
 
 .. list-table::
    :header-rows: 1
@@ -474,13 +474,13 @@ limit is documented anywhere in this repository.
 private ``_session`` attribute to perform the PUT, and calls
 ``authenticate()`` when it is ``None`` (``result_uploader.py:479-481``).
 The same private access appears in ``signing_keys.refresh_signing_keys``
-(``signing_keys.py:135-136``). Should ``automojo-restclient-base`` expose a
+(``signing_keys.py:135-136``). Should ``codecraftai-restclient-base`` expose a
 public accessor for the authenticated session, given two independent call
 sites now need one?
 
 *Blocks:* nothing functionally; it is a layering violation that will break
 silently if the base client renames the attribute.
-*Owner:* ``automojo-restclient-base``, then this repository.
+*Owner:* ``codecraftai-restclient-base``, then this repository.
 
 Schema and contract questions
 -----------------------------
