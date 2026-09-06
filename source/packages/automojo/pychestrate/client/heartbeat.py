@@ -30,6 +30,11 @@ from automojo.errors.exceptions import BadParameterError, ConfigurationError
 
 from automojo.pychestrate.client.mtlsclientcredential import MtlsClientCredential
 from automojo.pychestrate.client.pychestratemtlsclient import PychestrateMtlsClient
+from automojo.pychestrate.client.cancel_registry import (
+    CANCEL_REGISTRY,
+    extract_cancellations,
+    register_cancellations,
+)
 from automojo.pychestrate.client.state import ClientState
 
 
@@ -177,7 +182,19 @@ def send_one_heartbeat(client: PychestrateMtlsClient, client_id: str) -> int:
         client.authenticate()
 
     try:
-        client.clients.clients_heartbeat(client_id=client_id)
+        acknowledgement = client.clients.clients_heartbeat(client_id=client_id)
+        # A 200 answer carries queued operator cancellations
+        # (``ClientHeartbeatAck.cancellations``); record them so the
+        # dispatch consumer's executors can stop the affected runs.
+        cancellations = extract_cancellations(acknowledgement)
+        if len(cancellations) > 0:
+            fresh = register_cancellations(CANCEL_REGISTRY, cancellations)
+            logger.info(
+                "pychestrate-client: heartbeat delivered %d cancellation(s) (%d new) "
+                "for client_id=%s.", len(cancellations), fresh, client_id,
+            )
+            rtnval = 200
+            return rtnval
     except ValueError:
         # perform_call only raises HTTP error types on an unexpected
         # status; reaching this point means the status was the expected

@@ -31,6 +31,10 @@ from automojo.pychestrate.client.provision_executor import (
     PROVISION_STATUS_SUCCEEDED,
     ProvisionRunOutcome,
 )
+from automojo.pychestrate.client.rpa_executor import (
+    RPA_STATUS_SUCCEEDED,
+    RpaRunOutcome,
+)
 from automojo.pychestrate.client.envelope_verifier import (
     serialize_envelope_canonical,
 )
@@ -176,6 +180,8 @@ class _Routing:
         self.test_uploads = 0
         self.build_uploads = 0
         self.provision_uploads = 0
+        self.rpa_runs = 0
+        self.rpa_uploads = 0
         return
 
 
@@ -191,6 +197,8 @@ def _install_fakes(routing):
         "upload_run_results": dc_mod.upload_run_results,
         "upload_build_results": dc_mod.upload_build_results,
         "upload_provision_results": dc_mod.upload_provision_results,
+        "execute_rpa_envelope": dc_mod.execute_rpa_envelope,
+        "upload_rpa_results": dc_mod.upload_rpa_results,
     }
 
     def _fake_test_execute(*, state, envelope, local_run_id, aspects,
@@ -244,12 +252,33 @@ def _install_fakes(routing):
             tree_uploaded=True, file_count=4, detail="ok")
         return rtnval
 
+    def _fake_rpa_execute(*, state, envelope, local_run_id, aspects,
+                          progress_reporter=None):
+        routing.rpa_runs += 1
+        rtnval = RpaRunOutcome(
+            status=RPA_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/rpa-out", work_dir="/tmp/rpa-work",
+            command=["python", "-m", "jobs.invoice"], execution_mode="process",
+            type_id="invoice-import", version="1.0.0", detail="ok")
+        return rtnval
+
+    def _fake_rpa_upload(*, client, state, envelope, result_dir,
+                         run_succeeded, aspects, exit_code=None,
+                         execution_mode=None, rpa_status=None):
+        routing.rpa_uploads += 1
+        rtnval = ResultUploadOutcome(
+            status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,
+            tree_uploaded=True, file_count=2, detail="ok")
+        return rtnval
+
     dc_mod.execute_job_envelope = _fake_test_execute
     dc_mod.execute_build_envelope = _fake_build_execute
     dc_mod.execute_provision_envelope = _fake_provision_execute
     dc_mod.upload_run_results = _fake_test_upload
     dc_mod.upload_build_results = _fake_build_upload
     dc_mod.upload_provision_results = _fake_provision_upload
+    dc_mod.execute_rpa_envelope = _fake_rpa_execute
+    dc_mod.upload_rpa_results = _fake_rpa_upload
     return originals
 
 
@@ -260,6 +289,8 @@ def _restore_fakes(originals):
     dc_mod.upload_run_results = originals["upload_run_results"]
     dc_mod.upload_build_results = originals["upload_build_results"]
     dc_mod.upload_provision_results = originals["upload_provision_results"]
+    dc_mod.execute_rpa_envelope = originals["execute_rpa_envelope"]
+    dc_mod.upload_rpa_results = originals["upload_rpa_results"]
     return
 
 
@@ -359,6 +390,45 @@ def test_job_kind_provision_routes_to_provision_executor():
             testbase.assert_equal(len(client.dispatch.acks), 1)
             _, ack_body = client.dispatch.acks[0]
             testbase.assert_true("ACCEPTED" in ack_body.notes)
+    finally:
+        _restore_fakes(originals)
+    return
+
+
+def test_job_kind_rpa_routes_to_rpa_executor():
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _base_envelope()
+    envelope["job_kind"] = "rpa"
+    envelope["params"] = {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "entrypoint": {"command": ["python", "-m", "jobs.invoice"]},
+        "work_packet": {"customer_id": 42},
+    }
+    pending = _signed_pending(envelope, signing_key)
+
+    routing = _Routing()
+    originals = _install_fakes(routing)
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key)
+            client = _FakeRestClient()
+
+            executed = handle_one_dispatch(
+                client=client, state=state, pending=pending,
+                aspects=DispatchConsumerAspects())
+
+            testbase.assert_true(executed)
+            testbase.assert_equal(routing.rpa_runs, 1)
+            testbase.assert_equal(routing.rpa_uploads, 1)
+            testbase.assert_equal(routing.test_runs, 0)
+            testbase.assert_equal(routing.build_runs, 0)
+
+            _, ack_body = client.dispatch.acks[0]
+            testbase.assert_true("ACCEPTED" in ack_body.notes)
+            testbase.assert_true("rpa job succeeded" in ack_body.notes)
     finally:
         _restore_fakes(originals)
     return

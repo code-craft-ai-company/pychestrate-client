@@ -95,6 +95,11 @@ BUILD_RESULT_FORMAT_TAG = "build"
 #: ``summary_artifact_path`` / ``tests_*`` fields unset.
 PROVISION_RESULT_FORMAT_TAG = "provision"
 
+#: ``format_tag`` stamped on the ``ResultManifest`` for an uploaded RPA
+#: job result tree (``job_kind=rpa``). The server's result-ingest
+#: completion path branches on this tag.
+RPA_RESULT_FORMAT_TAG = "rpa.result.v1"
+
 #: Canonical top-level files an ``automojo-testbase`` result tree contains.
 TESTBASE_SUMMARY_FILENAME = "testrun_summary.json"
 TESTBASE_RESULTS_STREAM_FILENAME = "testrun_results_stream.jsos"
@@ -1427,6 +1432,176 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
     logger.info(
         "pychestrate-client: recorded provision-upload outcome (status=%s) "
         "at %s", status, record_path,
+    )
+
+    return outcome
+
+
+#: Sub-directory (under the client state directory) holding per-RPA-job
+#: local execution records. Mirrors :mod:`rpa_executor.DIRNAME_RPA`.
+DIRNAME_RPA = "rpa"
+RPA_RECORD_FILENAME = "rpa-record.json"
+
+
+def build_rpa_result_manifest(*, run_id: str, client_id: str,
+                              terminal_outcome: str, backend_driver: str,
+                              backend_key_prefix: str,
+                              entries: List[ResultTreeEntry],
+                              exit_code: Optional[int] = None,
+                              execution_mode: Optional[str] = None,
+                              rpa_status: Optional[str] = None,
+                              notes: Optional[str] = None) -> Resultmanifest:
+    """
+        Builds the ``ResultManifest`` describing an uploaded RPA job result
+        tree. Like builds, an RPA result tree carries no per-test records;
+        ``format_tag`` is :data:`RPA_RESULT_FORMAT_TAG` and the walked file
+        index plus the process exit code ride under ``extras``.
+
+        :returns: A populated :class:`Resultmanifest`.
+    """
+    file_index = [entry.as_dict() for entry in entries]
+
+    manifest = Resultmanifest(
+        run_id=run_id,
+        client_id=client_id,
+        format_tag=RPA_RESULT_FORMAT_TAG,
+        backend_key_prefix=backend_key_prefix,
+        completed_at=_now_rfc3339(),
+        terminal_outcome=terminal_outcome,
+    )
+    manifest.backend_driver = backend_driver
+    manifest.extras = {
+        "file_count": len(entries),
+        "files": file_index,
+        "exit_code": exit_code,
+        "execution_mode": execution_mode,
+        "rpa_status": rpa_status,
+    }
+    if notes is not None and len(notes) > 0:
+        manifest.notes = notes
+
+    return manifest
+
+
+def mark_rpa_upload_status(state: ClientState, run_id: str,
+                           upload_outcome: ResultUploadOutcome) -> str:
+    """
+        Records the result-upload outcome onto the local RPA job record so
+        a failed upload can be retried.
+
+        :returns: The absolute path of the record file.
+    """
+    safe_run_id = run_id if len(run_id) > 0 else "unknown-rpa"
+    record_dir = os.path.join(state.state_dir, DIRNAME_RPA, safe_run_id)
+    os.makedirs(record_dir, mode=0o755, exist_ok=True)
+
+    record_path = os.path.join(record_dir, RPA_RECORD_FILENAME)
+
+    record: Dict[str, Any] = {}
+    if os.path.isfile(record_path):
+        try:
+            with open(record_path, "r", encoding="utf-8") as recf:
+                loaded = json.load(recf)
+            if isinstance(loaded, dict):
+                record = loaded
+        except (ValueError, OSError) as readerr:
+            logger.warning(
+                "pychestrate-client: could not read RPA record %s, rewriting: %s",
+                record_path, readerr,
+            )
+            record = {}
+
+    record["run_id"] = run_id
+    record["upload"] = upload_outcome.as_dict()
+
+    with open(record_path, "w", encoding="utf-8") as recf:
+        json.dump(record, recf, indent=4, sort_keys=True)
+        recf.write(os.linesep)
+
+    rtnval = record_path
+    return rtnval
+
+
+def upload_rpa_results(*, client: PychestrateMtlsClient, state: ClientState,
+                       envelope: Dict[str, Any], result_dir: str,
+                       run_succeeded: bool,
+                       exit_code: Optional[int] = None,
+                       execution_mode: Optional[str] = None,
+                       rpa_status: Optional[str] = None,
+                       aspects: ResultUploaderAspects =
+                       DEFAULT_RESULT_UPLOADER_ASPECTS
+                       ) -> ResultUploadOutcome:
+    """
+        Walks a finished RPA results directory, uploads it to the shared
+        results object store, posts the RPA ``ResultManifest`` to
+        ``results/complete``, and records the upload outcome on the local
+        RPA job record. Resilient: a failed transfer or POST is captured as
+        an ``upload_failed`` outcome rather than raised.
+
+        :returns: A :class:`ResultUploadOutcome`.
+    """
+    run_id = str(envelope.get("run_id", ""))
+    client_id = str(envelope.get("client_id", ""))
+
+    locator = _extract_results_locator(envelope=envelope)
+    backend_key_prefix = locator["backend_key_prefix"]
+    backend_driver = locator["backend_driver"]
+
+    if run_succeeded:
+        terminal_outcome = TERMINAL_OUTCOME_SUCCESS
+    else:
+        terminal_outcome = TERMINAL_OUTCOME_FAILURE
+
+    entries = walk_result_tree(result_dir=result_dir)
+
+    store_driver = aspects.store_driver
+    if store_driver is None:
+        store_driver = PresignedUploadDriver(client=client)
+
+    tree_uploaded = upload_result_tree(
+        run_id=run_id, entries=entries, backend_driver=backend_driver,
+        backend_key_prefix=backend_key_prefix,
+        store_driver=store_driver)
+
+    notes = None
+    if not tree_uploaded:
+        notes = ("RPA result-tree byte transfer incomplete; manifest posted "
+                 "for reconciliation. See client-side RPA record.")
+
+    manifest = build_rpa_result_manifest(
+        run_id=run_id, client_id=client_id, terminal_outcome=terminal_outcome,
+        backend_driver=backend_driver, backend_key_prefix=backend_key_prefix,
+        entries=entries, exit_code=exit_code, execution_mode=execution_mode,
+        rpa_status=rpa_status, notes=notes)
+
+    manifest_posted = False
+    detail: Optional[str] = None
+    try:
+        post_results_complete(client=client, run_id=run_id, manifest=manifest)
+        manifest_posted = True
+    except Exception as posterr:
+        detail = "results/complete POST failed: {}".format(posterr)
+        logger.error("pychestrate-client: %s", detail)
+
+    if tree_uploaded and manifest_posted:
+        status = UPLOAD_STATUS_COMPLETE
+        if detail is None:
+            detail = "RPA result tree uploaded and results/complete accepted."
+    else:
+        status = UPLOAD_STATUS_FAILED
+        if detail is None:
+            detail = ("RPA result-tree byte transfer did not complete; job "
+                      "marked for upload retry.")
+
+    outcome = ResultUploadOutcome(
+        status=status, manifest_posted=manifest_posted,
+        tree_uploaded=tree_uploaded, file_count=len(entries), detail=detail)
+
+    record_path = mark_rpa_upload_status(
+        state=state, run_id=run_id, upload_outcome=outcome)
+    logger.info(
+        "pychestrate-client: recorded RPA-upload outcome (status=%s) at %s",
+        status, record_path,
     )
 
     return outcome

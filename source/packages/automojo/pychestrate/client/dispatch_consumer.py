@@ -64,6 +64,17 @@ from automojo.pychestrate.client.provision_executor import (
 from automojo.pychestrate.client.provision_progress_reporter import (
     ProvisionProgressReporter,
 )
+from automojo.pychestrate.client.rpa_executor import (
+    DEFAULT_RPA_EXECUTOR_ASPECTS,
+    RpaExecutorAspects,
+    RpaRunOutcome,
+    execute_rpa_envelope,
+)
+from automojo.pychestrate.client.rpa_progress_reporter import (
+    RpaProgressReporter,
+)
+from automojo.pychestrate.client.cancel_registry import CANCEL_REGISTRY
+from automojo.pychestrate.client.capabilities import advertise_pod_capabilities
 from automojo.pychestrate.client.envelope_verifier import (
     EnvelopeVerificationResult,
     verify_dispatch_envelope,
@@ -85,6 +96,7 @@ from automojo.pychestrate.client.result_uploader import (
     ResultUploaderAspects,
     upload_build_results,
     upload_provision_results,
+    upload_rpa_results,
     upload_run_results,
 )
 from automojo.pychestrate.client.signing_keys import refresh_signing_keys
@@ -104,6 +116,7 @@ from automojo.pychestrate.client.testbase_executor import (
 JOB_KIND_TEST = "test"
 JOB_KIND_BUILD = "build"
 JOB_KIND_PROVISION = "provision"
+JOB_KIND_RPA = "rpa"
 
 #: The ``job_kind`` an envelope defaults to when the discriminator is
 #: missing or unrecognized -- matches the server's ``DEFAULT_JOB_KIND``.
@@ -140,6 +153,9 @@ class DispatchConsumerAspects:
                  DEFAULT_BUILD_EXECUTOR_ASPECTS,
                  provision_executor_aspects: ProvisionExecutorAspects =
                  DEFAULT_PROVISION_EXECUTOR_ASPECTS,
+                 rpa_executor_aspects: RpaExecutorAspects =
+                 DEFAULT_RPA_EXECUTOR_ASPECTS,
+                 advertise_capabilities: bool = True,
                  progress_reporter_aspects: ProgressReporterAspects =
                  DEFAULT_PROGRESS_REPORTER_ASPECTS,
                  result_uploader_aspects: ResultUploaderAspects =
@@ -204,6 +220,8 @@ class DispatchConsumerAspects:
         self._executor_aspects = executor_aspects
         self._build_executor_aspects = build_executor_aspects
         self._provision_executor_aspects = provision_executor_aspects
+        self._rpa_executor_aspects = rpa_executor_aspects
+        self._advertise_capabilities = bool(advertise_capabilities)
         self._progress_reporter_aspects = progress_reporter_aspects
         self._result_uploader_aspects = result_uploader_aspects
         self._jwks_aspects = jwks_aspects
@@ -240,6 +258,14 @@ class DispatchConsumerAspects:
     @property
     def provision_executor_aspects(self) -> ProvisionExecutorAspects:
         return self._provision_executor_aspects
+
+    @property
+    def rpa_executor_aspects(self) -> RpaExecutorAspects:
+        return self._rpa_executor_aspects
+
+    @property
+    def advertise_capabilities(self) -> bool:
+        return self._advertise_capabilities
 
     @property
     def progress_reporter_aspects(self) -> ProgressReporterAspects:
@@ -402,7 +428,7 @@ def _resolve_job_kind(envelope: Dict[str, Any]) -> str:
 
         :param envelope: The verified envelope dict.
 
-        :returns: One of ``test`` / ``build`` / ``provision``.
+        :returns: One of ``test`` / ``build`` / ``provision`` / ``rpa``.
     """
     raw = envelope.get("job_kind", None)
     if raw is None:
@@ -410,7 +436,8 @@ def _resolve_job_kind(envelope: Dict[str, Any]) -> str:
         return rtnval
 
     candidate = str(raw)
-    if candidate in (JOB_KIND_TEST, JOB_KIND_BUILD, JOB_KIND_PROVISION):
+    if candidate in (JOB_KIND_TEST, JOB_KIND_BUILD, JOB_KIND_PROVISION,
+                     JOB_KIND_RPA):
         rtnval = candidate
         return rtnval
 
@@ -596,6 +623,68 @@ def _handle_provision_job(*, client: PychestrateMtlsClient,
     return rtnval
 
 
+def _handle_rpa_job(*, client: PychestrateMtlsClient, state: ClientState,
+                    envelope: Dict[str, Any], run_id: str, client_id: str,
+                    local_run_id: str,
+                    aspects: DispatchConsumerAspects) -> str:
+    """
+        Runs a verified ``job_kind=rpa`` envelope through the RPA executor
+        (source acquisition + process / tasker subprocess), uploads the
+        results directory, and returns the ack note.
+
+        :returns: The free-form ack note describing the job + upload.
+    """
+    progress_reporter = RpaProgressReporter(
+        state=state, run_id=run_id, client_id=client_id, client=client)
+
+    # The heartbeat thread records operator cancel requests in the
+    # shared registry; the executor polls it while the job runs.
+    run_aspects = aspects.rpa_executor_aspects.with_cancel_check(
+        lambda: CANCEL_REGISTRY.is_cancelled(run_id))
+    try:
+        outcome: RpaRunOutcome = execute_rpa_envelope(
+            state=state,
+            envelope=envelope,
+            local_run_id=local_run_id,
+            aspects=run_aspects,
+            progress_reporter=progress_reporter,
+        )
+    finally:
+        CANCEL_REGISTRY.clear(run_id)
+
+    upload_outcome = upload_rpa_results(
+        client=client,
+        state=state,
+        envelope=envelope,
+        result_dir=outcome.output_dir,
+        run_succeeded=outcome.succeeded,
+        exit_code=outcome.exit_code,
+        execution_mode=outcome.execution_mode,
+        rpa_status=outcome.status,
+        aspects=aspects.result_uploader_aspects,
+    )
+
+    if outcome.succeeded:
+        run_note = "rpa job succeeded (type={} version={} mode={})".format(
+            outcome.type_id, outcome.version, outcome.execution_mode)
+    elif outcome.cancelled:
+        run_note = "rpa job CANCELLED by operator request"
+    elif outcome.timed_out:
+        run_note = "rpa job TIMED OUT ({})".format(outcome.detail)
+    else:
+        run_note = "rpa job FAILED ({})".format(outcome.detail)
+
+    if upload_outcome.succeeded:
+        upload_note = "results uploaded ({} files)".format(
+            upload_outcome.file_count)
+    else:
+        upload_note = "result upload INCOMPLETE ({})".format(
+            upload_outcome.detail)
+
+    rtnval = "ACCEPTED: {}; {}.".format(run_note, upload_note)
+    return rtnval
+
+
 def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
                         pending: Any,
                         aspects: DispatchConsumerAspects) -> bool:
@@ -693,7 +782,11 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
 
     job_kind = _resolve_job_kind(envelope=envelope)
 
-    if job_kind == JOB_KIND_PROVISION:
+    if job_kind == JOB_KIND_RPA:
+        notes = _handle_rpa_job(
+            client=client, state=state, envelope=envelope, run_id=run_id,
+            client_id=client_id, local_run_id=local_run_id, aspects=aspects)
+    elif job_kind == JOB_KIND_PROVISION:
         notes = _handle_provision_job(
             client=client, state=state, envelope=envelope, run_id=run_id,
             client_id=client_id, local_run_id=local_run_id, aspects=aspects)
@@ -752,6 +845,14 @@ def run_dispatch_consumer_loop(state: ClientState,
     """
     client = build_client_from_state(state=state)
     client_id = state.read_client_id()
+    if aspects.advertise_capabilities:
+        try:
+            advertise_pod_capabilities(
+                client=client, state=state, client_id=client_id,
+                taskplus_binary=aspects.rpa_executor_aspects.taskplus_binary)
+        except Exception as adverr:
+            logger.warning(
+                "pychestrate-client: capability advertisement raised (loop continues): %s", adverr)
 
     sleep_func = aspects.sleep_func
     stop_flag = {"requested": False}
