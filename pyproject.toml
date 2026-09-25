@@ -8,7 +8,8 @@ license = "LICENSE.txt"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
-    "Operating System :: POSIX"
+    "Operating System :: POSIX",
+    "Private :: Do Not Upload"
 ]
 keywords = [
     "python",
