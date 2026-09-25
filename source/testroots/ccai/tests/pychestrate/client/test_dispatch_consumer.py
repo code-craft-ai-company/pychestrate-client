@@ -730,10 +730,11 @@ def test_handle_one_dispatch_streams_progress_uploads_and_completes():
             # The result tree was transferred via the store driver.
             testbase.assert_true(len(driver.transfers) >= 2)
 
-            # The dispatch was acked last, after the upload completed.
+            # The dispatch was acked once, as the receipt that preceded the
+            # job; the outcome travels in the manifest above.
             testbase.assert_equal(len(client.dispatch.acks), 1)
             _, ack_body = client.dispatch.acks[0]
-            testbase.assert_true("results uploaded" in ack_body.notes)
+            testbase.assert_equal(ack_body.notes, "ACCEPTED: starting job_kind=test")
     finally:
         dc_mod.execute_job_envelope = original_execute
     return
@@ -799,8 +800,7 @@ def test_handle_one_dispatch_upload_failure_still_acks():
             # The dispatch is still acked.
             testbase.assert_equal(len(client.dispatch.acks), 1)
             _, ack_body = client.dispatch.acks[0]
-            testbase.assert_true("ACCEPTED" in ack_body.notes)
-            testbase.assert_true("INCOMPLETE" in ack_body.notes)
+            testbase.assert_true(ack_body.notes.startswith("ACCEPTED"))
 
             # The run is marked locally for upload retry.
             testbase.assert_true(run_needs_upload_retry(
@@ -1004,4 +1004,43 @@ def test_consumer_loop_stop_ends_a_pause_promptly():
 
     testbase.assert_true(loop_thread.is_alive() is False)
     testbase.assert_true(stop_seconds < 2.0)
+    return
+
+
+def test_handle_one_dispatch_acks_before_running_the_job():
+    """
+    **Feature: dispatch protocol (E2E-08)**
+    **Property: A verified dispatch is acked before the job starts, because
+    the service refuses progress and artifact uploads for a run it holds
+    no dispatch receipt for.**
+    """
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    acks_seen_by_job = {"count": None}
+    client_holder = {}
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
+        acks_seen_by_job["count"] = len(client_holder["client"].dispatch.acks)
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(os.path.join(tmpdir, "state"), signing_key)
+            client = _FakeRestClient(sequence=[])
+            client_holder["client"] = client
+
+            handle_one_dispatch(
+                client=client, state=state, pending=pending,
+                aspects=DispatchConsumerAspects())
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+
+    testbase.assert_equal(acks_seen_by_job["count"], 1)
     return

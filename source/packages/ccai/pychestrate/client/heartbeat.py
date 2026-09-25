@@ -48,6 +48,14 @@ DEFAULT_HEARTBEAT_MAX_BACKOFF_SECONDS = 300.0
 logger = logging.getLogger(__name__)
 
 
+class HeartbeatAnomaly(Exception):
+    """
+        Raised when the heartbeat gets an answer that is neither the
+        documented 204 nor a JSON ``ClientHeartbeatAck`` -- typically a
+        non-JSON 200 body from a login page, proxy or wrong base URL.
+    """
+
+
 class HeartbeatAspects:
     """
         The :class:`HeartbeatAspects` packages caller-controlled behavior for
@@ -164,7 +172,12 @@ def build_client_from_state(state: ClientState) -> PychestrateMtlsClient:
         service_ca_path=state.service_ca_path,
     )
 
-    rtnval = PychestrateMtlsClient(host=host, credential=credential, port=port, scheme=scheme)
+    # Enrollments made before base_path was recorded get the default
+    # (/api/v1), which is where the service mounts its API.
+    base_path = config.get("base_path")
+
+    rtnval = PychestrateMtlsClient(
+        host=host, credential=credential, port=port, scheme=scheme, base_path=base_path)
     return rtnval
 
 
@@ -174,48 +187,53 @@ def send_one_heartbeat(client: PychestrateMtlsClient, client_id: str) -> int:
         ``GET /api/v1/clients/{client_id}/heartbeat`` through the
         codegen'd ``clients.clients_heartbeat`` method.
 
-        The service answers a successful heartbeat with HTTP 204 and an
-        empty body. The codegen'd method attempts to decode that empty
-        body as JSON, which raises a :class:`ValueError`. Because a 204
-        IS the success contract for this endpoint, a decode failure that
-        follows a clean (non-raising) ``perform_call`` is treated as a
-        successful heartbeat and reported as status 204.
+        The service answers a heartbeat with HTTP 204 and no body, or with
+        HTTP 200 and a ``ClientHeartbeatAck`` carrying queued operator
+        cancellations. The codegen'd method returns None for the 204 and
+        the decoded body for the 200, so a :class:`ValueError` from it
+        means a 200 whose body is not JSON -- a login page, a proxy, a base
+        URL missing ``/api/v1`` -- which is raised as
+        :class:`HeartbeatAnomaly` instead of being counted as a success.
 
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param client_id: The assigned client UUID.
 
-        :returns: The HTTP status code reported for the heartbeat
-                  (204 on success).
-        :raises: requests.RequestException, codecraftai HTTP error types
+        :returns: The HTTP status code of the heartbeat (204, or 200 when
+                  the answer carried cancellations).
+        :raises: HeartbeatAnomaly, requests.RequestException, codecraftai
+                 HTTP error types
     """
     if client._session is None:
         client.authenticate()
 
     try:
-        acknowledgement = client.clients.clients_heartbeat(client_id=client_id)
-        # A 200 answer carries queued operator cancellations
-        # (``ClientHeartbeatAck.cancellations``); record them so the
-        # dispatch consumer's executors can stop the affected runs.
-        cancellations = extract_cancellations(acknowledgement)
-        if len(cancellations) > 0:
-            fresh = register_cancellations(CANCEL_REGISTRY, cancellations)
-            logger.info(
-                "pychestrate-client: heartbeat delivered %d cancellation(s) (%d new) "
-                "for client_id=%s.", len(cancellations), fresh, client_id,
-            )
-            rtnval = 200
-            return rtnval
-    except ValueError:
-        # perform_call only raises HTTP error types on an unexpected
-        # status; reaching this point means the status was the expected
-        # 204 and the only failure was decoding an intentionally-empty
-        # body. That is a successful heartbeat.
-        logger.debug(
-            "pychestrate-client: heartbeat 204 (empty body) for client_id=%s.",
-            client_id,
+        acknowledgement = client.clients.clients_heartbeat(
+            client_id=client_id, exp_status=[200, 204])
+    except ValueError as decode_err:
+        errmsg = (
+            "the heartbeat answered with a body that is not JSON ({}); the "
+            "configured service URL may be wrong (for example missing /api/v1) "
+            "or a proxy or login page answered instead of the service".format(
+                decode_err)
+        )
+        raise HeartbeatAnomaly(errmsg) from decode_err
+
+    if acknowledgement is None:
+        rtnval = 204
+        return rtnval
+
+    # A 200 answer carries queued operator cancellations
+    # (``ClientHeartbeatAck.cancellations``); record them so the dispatch
+    # consumer's executors can stop the affected runs.
+    cancellations = extract_cancellations(acknowledgement)
+    if len(cancellations) > 0:
+        fresh = register_cancellations(CANCEL_REGISTRY, cancellations)
+        logger.info(
+            "pychestrate-client: heartbeat delivered %d cancellation(s) (%d new) "
+            "for client_id=%s.", len(cancellations), fresh, client_id,
         )
 
-    rtnval = 204
+    rtnval = 200
     return rtnval
 
 

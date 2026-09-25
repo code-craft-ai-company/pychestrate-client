@@ -64,7 +64,10 @@ logger = logging.getLogger(__name__)
 TESTBASE_RESULTS_STREAM_FILENAME = "testrun_results_stream.jsos"
 
 #: Parser tag the progress ingester uses to select the testbase parser.
-PROGRESS_FORMAT_TAG = "testbase"
+#: Must match the service's registered progress parser
+#: (``ingest/progress/factories/testbase_v1.py``); any other tag is refused
+#: with "No progress_parser registered".
+PROGRESS_FORMAT_TAG = "testbase-v1"
 
 #: Default seconds between consecutive stream-file polls.
 DEFAULT_PROGRESS_POLL_INTERVAL_SECONDS = 5.0

@@ -427,8 +427,7 @@ def test_job_kind_rpa_routes_to_rpa_executor():
             testbase.assert_equal(routing.build_runs, 0)
 
             _, ack_body = client.dispatch.acks[0]
-            testbase.assert_true("ACCEPTED" in ack_body.notes)
-            testbase.assert_true("rpa job succeeded" in ack_body.notes)
+            testbase.assert_equal(ack_body.notes, "ACCEPTED: starting job_kind=rpa")
     finally:
         _restore_fakes(originals)
     return

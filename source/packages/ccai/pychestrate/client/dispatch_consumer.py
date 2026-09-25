@@ -764,13 +764,16 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
                RFC 7517 JWK Set fetched and cached from the service's JWKS
                endpoint is used. On a verification failure: log loudly, ack
                with a rejection note, do NOT execute.
-            2. On a verified envelope: shell out to testbase to run the
-               job (resilient — never crashes the consumer), streaming live
-               progress to the service for the lifetime of the run.
-            3. Upload the result tree to the shared results backend and POST
-               ``results/complete`` (resilient — a failed upload is marked
+            2. On a verified envelope: ack the dispatch at once. The ack is
+               the receipt the service requires before it accepts progress
+               frames or artifact uploads for the run, so it must precede
+               them. If the ack fails the job is not started.
+            3. Run the job (resilient — never crashes the consumer),
+               streaming live progress to the service for the lifetime of
+               the run.
+            4. Upload the result tree and POST ``results/complete``, which
+               carries the outcome (resilient — a failed upload is marked
                on the local run record for retry).
-            4. Ack the dispatch with the execution + upload outcome.
 
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param state: The :class:`ClientState`.
@@ -845,6 +848,14 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
 
     job_kind = _resolve_job_kind(envelope=envelope)
 
+    # Receipt first: the service refuses progress (404) and artifact
+    # presigning (403) for a run it holds no dispatch receipt for.
+    acknowledge_dispatch(
+        client=client, run_id=run_id, envelope_id=envelope_id,
+        dispatch_attempt_id=dispatch_attempt_id, client_id=client_id,
+        local_run_id=local_run_id,
+        notes="ACCEPTED: starting job_kind={}".format(job_kind))
+
     if job_kind == JOB_KIND_RPA:
         notes = _handle_rpa_job(
             client=client, state=state, envelope=envelope, run_id=run_id,
@@ -862,14 +873,9 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
             client=client, state=state, envelope=envelope, run_id=run_id,
             client_id=client_id, local_run_id=local_run_id, aspects=aspects)
 
-    acknowledge_dispatch(
-        client=client, run_id=run_id, envelope_id=envelope_id,
-        dispatch_attempt_id=dispatch_attempt_id, client_id=client_id,
-        local_run_id=local_run_id, notes=notes)
-
     logger.info(
-        "pychestrate-client: dispatch run_id=%s handled (job_kind=%s).",
-        run_id, job_kind,
+        "pychestrate-client: dispatch run_id=%s handled (job_kind=%s): %s",
+        run_id, job_kind, notes,
     )
 
     rtnval = True

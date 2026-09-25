@@ -58,6 +58,7 @@ __credits__ = []
 
 
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin
 
 import hashlib
 import json
@@ -480,6 +481,14 @@ class PresignedUploadDriver(ResultStoreDriver):
         if isinstance(target_headers, dict):
             for header_name, header_value in target_headers.items():
                 headers[header_name] = str(header_value)
+
+        # The service's local-filesystem backend mints service-rooted URLs
+        # ("/api/v1/runs/{id}/artifacts/_local-upload?..."); an object-store
+        # backend mints absolute ones. urljoin resolves the former against
+        # the service origin and leaves the latter untouched.
+        origin_url = getattr(self._client, "origin_url", None)
+        if origin_url is not None and not put_url.lower().startswith(("http://", "https://")):
+            put_url = urljoin(origin_url + "/", put_url)
 
         if self._client._session is None:
             self._client.authenticate()

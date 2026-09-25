@@ -30,13 +30,16 @@ from cryptography.x509.oid import NameOID
 
 from ccai.errors.exceptions import BadParameterError, HTTPRequestError
 
+from ccai.pychestrate.client.pychestratemtlsclient import DEFAULT_API_BASE_PATH, normalize_base_path
 from ccai.pychestrate.client.signing_keys import persist_signing_keys_from_enrollment
 from ccai.pychestrate.client.state import ClientState
 
 
 DEFAULT_RSA_KEY_SIZE = 2048
 
-ENROLLMENT_REDEEM_PATH = "/api/v1/enrollment-tokens/redeem"
+#: The redeem endpoint, relative to the API base path.
+ENROLLMENT_REDEEM_LEAF = "/enrollment-tokens/redeem"
+ENROLLMENT_REDEEM_PATH = DEFAULT_API_BASE_PATH + ENROLLMENT_REDEEM_LEAF
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +143,28 @@ def _derive_host_and_scheme(service_url: str) -> Tuple[str, str, Optional[int]]:
     return rtnval
 
 
+def derive_api_base_path(service_url: str) -> str:
+    """
+        Derives the REST API base path from the operator's service URL.
+        A URL with no path means the API is at ``/api/v1``; a URL that
+        carries a prefix (the service behind a proxy under ``/pychestrate``)
+        keeps it; a URL that already ends in ``/api/v1`` is used as given.
+
+        :param service_url: The ``--service-url`` the client enrolled with.
+
+        :returns: The normalized base path, e.g. ``/api/v1`` or
+                  ``/pychestrate/api/v1``.
+    """
+    path = urlparse(service_url).path.strip("/ ")
+    if len(path) == 0:
+        rtnval = DEFAULT_API_BASE_PATH
+    elif ("/" + path).endswith(DEFAULT_API_BASE_PATH):
+        rtnval = normalize_base_path(base_path=path)
+    else:
+        rtnval = normalize_base_path(base_path=path + DEFAULT_API_BASE_PATH)
+    return rtnval
+
+
 def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
                        state: ClientState, attributes: Optional[Dict[str, Any]] = None,
                        verify_tls: bool = True,
@@ -199,10 +224,11 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
         attributes=attributes,
     )
 
+    base_path = derive_api_base_path(service_url=service_url)
     redeem_url = "{}://{}".format(scheme, host)
     if port is not None:
         redeem_url = "{}:{}".format(redeem_url, port)
-    redeem_url = "{}{}".format(redeem_url, ENROLLMENT_REDEEM_PATH)
+    redeem_url = "{}{}{}".format(redeem_url, base_path, ENROLLMENT_REDEEM_LEAF)
 
     logger.info("pychestrate-client: redeeming enrollment token at %s", redeem_url)
 
@@ -254,6 +280,7 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
         "host": host,
         "scheme": scheme,
         "port": port,
+        "base_path": base_path,
         "client_name": client_name,
     }
     if attributes is not None:

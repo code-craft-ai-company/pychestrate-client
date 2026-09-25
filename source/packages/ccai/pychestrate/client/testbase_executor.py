@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 #: Name of the testbase console-script the executor shells out to.
 DEFAULT_TESTBASE_BINARY = "testbase"
 
+#: Envelope ``params`` fields that may carry the local test root, in the
+#: order they are tried: the service's testbase runner writes ``root``;
+#: older envelopes used ``test_root`` or ``testbase_root``.
+TEST_ROOT_PARAM_NAMES = ("root", "test_root", "testbase_root")
+
 #: Default per-run wall-clock cap (seconds) for the testbase subprocess.
 DEFAULT_RUN_TIMEOUT_SECONDS = 14400.0
 
@@ -232,10 +237,12 @@ def _extract_excludes(params: Dict[str, Any]) -> List[str]:
 
 def _extract_test_root(envelope: Dict[str, Any]) -> Optional[str]:
     """
-        Resolves the testbase project root from the envelope. The root
-        may be supplied as ``params.test_root`` (an already-present local
-        path). M2 does not fetch a remote project; if only a remote
-        reference is present the root is left unresolved.
+        Resolves the testbase project root from the envelope. The root is
+        an already-present local path in ``params.root`` -- the field the
+        service's testbase runner writes -- or, for envelopes from older
+        services, ``params.test_root`` / ``params.testbase_root``. M2 does
+        not fetch a remote project; if only a remote reference is present
+        the root is left unresolved.
 
         :param envelope: The verified envelope dict.
 
@@ -246,9 +253,11 @@ def _extract_test_root(envelope: Dict[str, Any]) -> Optional[str]:
         rtnval = None
         return rtnval
 
-    candidate = params.get("test_root", None)
-    if candidate is None:
-        candidate = params.get("testbase_root", None)
+    candidate = None
+    for field_name in TEST_ROOT_PARAM_NAMES:
+        candidate = params.get(field_name, None)
+        if candidate is not None and len(str(candidate)) > 0:
+            break
 
     rtnval = None
     if candidate is not None and len(str(candidate)) > 0:
@@ -278,12 +287,12 @@ def build_testbase_command(*, envelope: Dict[str, Any], output_dir: str,
             "testbase project root.",
             "    envelope_id: {}".format(envelope.get("envelope_id")),
             "    job_type: {}".format(envelope.get("job_type")),
-            "M2 expects the envelope 'params' to include a local "
-            "'test_root' path; remote project fetch is out of scope.",
+            "The envelope 'params' must include a local test root path "
+            "('root'); remote project fetch is out of scope.",
         ]
         errmsg = os.linesep.join(errmsg_lines)
         raise BadParameterError(
-            errmsg, "envelope", "Include 'params.test_root' in the envelope.")
+            errmsg, "envelope", "Include 'params.root' in the envelope.")
 
     params = envelope.get("params", {})
     if not isinstance(params, dict):

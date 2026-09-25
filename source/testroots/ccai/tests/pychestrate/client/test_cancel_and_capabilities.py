@@ -64,7 +64,7 @@ class _FakeClientsGroup:
         self.calls = []
         return
 
-    def clients_heartbeat(self, client_id):
+    def clients_heartbeat(self, client_id, **kwargs):
         self.calls.append(client_id)
         if isinstance(self._answer, Exception):
             raise self._answer
@@ -87,8 +87,8 @@ def test_heartbeat_records_cancellations_from_the_acknowledgement():
     testbase.assert_true(CANCEL_REGISTRY.is_cancelled("44444444-4444-4444-4444-444444444444"))
     CANCEL_REGISTRY.clear("44444444-4444-4444-4444-444444444444")
 
-    # The empty 204 answer decodes as ValueError in the generated client.
-    client = _FakeClient(ValueError("no body"))
+    # The generated client returns None for the empty 204 answer.
+    client = _FakeClient(None)
     status = heartbeat_mod.send_one_heartbeat(client=client, client_id="c-1")
     testbase.assert_equal(status, 204)
     return
