@@ -4,7 +4,7 @@ M2 - Dispatch Consumption and Envelope Verification
 
 :Milestone: M2 (shipped)
 :Status: Shipped-Documented
-:Source of Truth: the code in ``source/packages/automojo/pychestrate/client``
+:Source of Truth: the code in ``source/packages/ccai/pychestrate/client``
 :Derived From: ``dispatch_consumer.py``, ``envelope_verifier.py``,
    ``signing_keys.py``, ``testbase_executor.py``, ``state.py``, ``cli.py``,
    ``README.rst``, ``AGENTS.md``
@@ -16,7 +16,7 @@ Purpose
 M2 gave the pod-side client its consumption half of the orchestration loop:
 it asks the Pychestrate service for assigned work, proves the work was
 issued by the service before touching it, runs it through
-``automojo-testbase``, and tells the service it took the job.
+``codecraftai-testbase``, and tells the service it took the job.
 
 The security property M2 establishes is the important one. A pod client
 executes arbitrary commands on an operator's machine, so the client
@@ -36,7 +36,7 @@ Scope
 - The dispatch-consumer loop: long-poll, back-off, shutdown, iteration cap.
 - Signed job envelope verification: canonical serialization, signing-key
   resolution, signature check, and the structured outcome it produces.
-- Translation of a verified envelope into an ``automojo-testbase``
+- Translation of a verified envelope into an ``codecraftai-testbase``
   invocation, and execution of that invocation.
 - The local run record written for each executed job.
 - Dispatch acknowledgement, including how a rejection is conveyed.
@@ -389,7 +389,7 @@ Interfaces
 REST operations consumed
 ------------------------
 
-All calls go through the codegen'd ``automojo-restclient-pychestrate``
+All calls go through the codegen'd ``codecraftai-restclient-pychestrate``
 package over the mTLS session established from the enrolled identity.
 
 .. list-table::
@@ -481,7 +481,7 @@ Verification
 ============
 
 Requirements are covered by TestBase tests under
-``source/testroots/automojo/tests/pychestrate/client/``.
+``source/testroots/ccai/tests/pychestrate/client/``.
 
 .. list-table::
    :header-rows: 1
@@ -539,8 +539,8 @@ doubling and reset), **M2-DL-006** (signal installation from a non-main
 thread), **M2-EX-007** (run timeout), **M2-CLI-001** through
 **M2-CLI-003**. Run the suite with::
 
-    testbase testing run --root source/testroots/automojo \
-        --includes=automojo.tests.pychestrate.client --output=./.output
+    testbase testing run --root source/testroots/ccai \
+        --includes=ccai.tests.pychestrate.client --output=./.output
 
 Open Questions
 ==============
@@ -554,7 +554,7 @@ silently swallowed as a timeout or an acceptance, which conflicts with the
 repository's "errors should never pass silently" standard.
 
 *Blocks:* deciding whether the client needs a status-code-aware accessor.
-*Owner:* ``automojo-restclient-base`` / ``automojo-restclient-pychestrate``
+*Owner:* ``codecraftai-restclient-base`` / ``codecraftai-restclient-pychestrate``
 - does ``perform_call`` expose the response status code to the caller?
 
 **OQ-DL-002** - Is one-job-at-a-time the intended contract for a pod
@@ -597,7 +597,7 @@ generated binding for) the envelope schema, so a service-side field
 addition or rename is caught at build time rather than at dispatch time?
 
 *Blocks:* specifying required-vs-optional envelope fields with authority.
-*Owner:* ``pychestrate-service`` / ``automojo-restclient-pychestrate``.
+*Owner:* ``pychestrate-service`` / ``codecraftai-restclient-pychestrate``.
 
 **OQ-DV-003** - The air-gapped fallback path appears to be
 non-functional for verification. ``install-signing-key`` writes

@@ -5,8 +5,8 @@ is known as 'AutomationX'. The primary goal of 'AutomationX' is to help the comp
 a suite of Python foundation software packages that are well planned out, highly reusable,
 modular, and that enable companies to rapidly build advanced automation software systems and
 automation pipelines. When building and creating packages, 'AutomationX' always focuses
-on reusing modular code from other 'automojo-*' packages and always works to look at the big
-picture and make sure code and functionality is placed in the correct 'automojo-*' package.
+on reusing modular code from other 'codecraftai-*' packages and always works to look at the big
+picture and make sure code and functionality is placed in the correct 'codecraftai-*' package.
 AutomationX is a very creative, but very disciplined software engineer that values code stability,
 reusability and scalability over quick fixes and fast delivery.
 
@@ -19,7 +19,7 @@ reusability and scalability over quick fixes and fast delivery.
 - Never work around missing dependencies; halt and ask for assistance
 - Avoid using relative imports
 - Only write tests to test product code, never write tests to verify specs
-- Always prioritize the reuse of code from 'automojo-*' packages over rewriting functionality
+- Always prioritize the reuse of code from 'codecraftai-*' packages over rewriting functionality
 
 # Project Overview
 The `pychestrate-client` package is the **pod-side runtime client** for the Pychestrate
@@ -30,10 +30,10 @@ machine. Its responsibilities are:
    (exchanging a CSR for a signed mTLS client certificate + a `client_id`).
 2. **Heartbeat** against the service registry on a periodic interval.
 3. *(M2)* Long-poll the dispatch endpoint for assigned jobs.
-4. *(M2)* Shell out to `automojo-testbase` to execute dispatched jobs.
+4. *(M2)* Shell out to `codecraftai-testbase` to execute dispatched jobs.
 5. *(M3)* Push progress + final results back to the service.
 
-The runtime consumes the codegen'd `automojo-restclient-pychestrate` package for all
+The runtime consumes the codegen'd `codecraftai-restclient-pychestrate` package for all
 HTTP traffic against the Pychestrate REST API - it never hand-rolls HTTP calls against
 the service.
 
@@ -41,23 +41,23 @@ the service.
 
 - **The runtime is "client", NEVER "agent".** Internal prose, package names, log
   messages, variable names, and commit messages must all use "client" terminology.
-  This aligns with the broader `automojo-*-client` family.
-- **The Python namespace is `automojo.pychestrate.client.*`** (product-first hierarchy).
-  Do not use the inverted `automojo.client.pychestrate.*` form.
-- The REST client this package consumes is at `automojo.pychestrate.rest.client.*`
-  (note: also product-first under `automojo.pychestrate`).
+  This aligns with the broader `codecraftai-*-client` family.
+- **The Python namespace is `ccai.pychestrate.client.*`** (product-first hierarchy).
+  Do not use the inverted `ccai.client.pychestrate.*` form.
+- The REST client this package consumes is at `ccai.pychestrate.rest.client.*`
+  (note: also product-first under `ccai.pychestrate`).
 
 # Testing Conventions
 This repository utilizes the 'testbase' test framework. Tests live under
-`source/testroots/automojo/` and mirror the source hierarchy under
+`source/testroots/ccai/` and mirror the source hierarchy under
 `source/packages/`.
 
-File to test: `source/packages/automojo/pychestrate/client/enrollment.py`
-Test file location: `source/testroots/automojo/tests/pychestrate/client/test_enrollment.py`
+File to test: `source/packages/ccai/pychestrate/client/enrollment.py`
+Test file location: `source/testroots/ccai/tests/pychestrate/client/test_enrollment.py`
 
 # Code Naming Conventions
 Follow the Automation Mojo organization standing guidance for Python coding
-standards (the org-level `CLAUDE.md` that applies to every `automojo-*`
+standards (the org-level `CLAUDE.md` that applies to every `codecraftai-*`
 repository). The short form:
 
 - `snake_case` for functions, methods, parameters.
@@ -72,9 +72,9 @@ been ported here yet, so the org standing guidance is authoritative for
 anything the list above does not cover.
 
 # Code Structure
-- `source/packages/automojo/pychestrate/client/` - the runtime package
+- `source/packages/ccai/pychestrate/client/` - the runtime package
   (regular package with `__init__.py`).
-- `automojo/` and `automojo/pychestrate/` are PEP 420 namespace packages
+- `ccai/` and `ccai/pychestrate/` are PEP 420 namespace packages
   (no `__init__.py`).
 
 # Coding Standards
@@ -115,10 +115,10 @@ For local development:
   REST surface. When no driver is wired the run is marked `upload_failed`
   locally for retry.
 - Do not bypass the codegen'd REST client. If an operation is missing from
-  `automojo-restclient-pychestrate`, halt and report rather than hand-rolling
+  `codecraftai-restclient-pychestrate`, halt and report rather than hand-rolling
   the HTTP call.
 - The codegen'd REST client is consumed as a git source dependency in
-  `pyproject.toml`, matching the other `automojo-*` deps.
+  `pyproject.toml`, matching the other `codecraftai-*` deps.
 - The dispatch consumer MUST verify the Ed25519 signature on every job
   envelope before executing it, and MUST refuse to execute an envelope it
   cannot verify.
@@ -151,7 +151,7 @@ For local development:
   are NOT swallowed -- they propagate so the dispatch-consumer loop backs
   off and retries instead of permanently rejecting a legitimate job.
 - **Open item:** the exact JWKS method name on the codegen'd REST client
-  depends on how `automojo-restclient-pychestrate` is generated from the
+  depends on how `codecraftai-restclient-pychestrate` is generated from the
   service's OpenAPI document. `jwks.DEFAULT_JWKS_OPERATION_CANDIDATES`
   probes the plausible generated names and raises an actionable
   `ConfigurationError` naming every candidate it tried when none is
