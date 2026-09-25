@@ -184,3 +184,33 @@ def test_non_json_heartbeat_answer_is_not_counted_as_success():
 
     testbase.assert_true(raised is not None)
     return
+
+
+def test_server_trust_bundle_holds_public_roots_and_the_service_chain():
+    """
+    **Feature: TLS trust (live E2E finding)**
+    **Property: the bundle the client verifies the service's TLS
+    certificate against holds the public CA roots (as enrollment used)
+    and the enrollment CA chain -- the chain alone refused every service
+    behind a publicly issued certificate.**
+    """
+    import certifi
+    import os
+
+    from ccai.pychestrate.client.pychestratemtlsclient import build_server_trust_bundle
+
+    service_chain = "-----BEGIN CERTIFICATE-----\nSERVICECHAIN\n-----END CERTIFICATE-----\n"
+    with tempfile.TemporaryDirectory() as state_dir:
+        service_ca_path = os.path.join(state_dir, "service-ca.crt")
+        with open(service_ca_path, "w") as fh:
+            fh.write(service_chain)
+
+        bundle_path = build_server_trust_bundle(service_ca_path=service_ca_path)
+        with open(bundle_path) as fh:
+            bundle = fh.read()
+        with open(certifi.where()) as fh:
+            first_public_root = fh.read().split("-----END CERTIFICATE-----")[0]
+
+    testbase.assert_true(service_chain in bundle)
+    testbase.assert_true(first_public_root in bundle)
+    return

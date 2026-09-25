@@ -16,6 +16,10 @@ __credits__ = []
 
 from typing import Any, Optional
 
+import os
+
+import certifi
+
 from requests import Session
 
 from ccai.pychestrate.client.mtlsclientcredential import MtlsClientCredential
@@ -27,6 +31,49 @@ from ccai.restclient.base.aspectsrest import AspectsRest, DEFAULT_REST_ASPECTS
 #: ("/clients/{id}/heartbeat") are relative to it, but its base class builds
 #: only ``scheme://host[:port]``.
 DEFAULT_API_BASE_PATH = "/api/v1"
+
+
+#: File, next to the service CA chain in the state directory, holding the
+#: CA bundle the client verifies the service's TLS certificate against.
+SERVER_TRUST_BUNDLE_FILENAME = "server-trust.pem"
+
+
+def build_server_trust_bundle(*, service_ca_path: str) -> str:
+    """
+        Writes the bundle the client verifies the service's TLS
+        certificate against: the public CA roots (``certifi``, the same
+        bundle the enrollment redeem call verified the service with) plus
+        the service CA chain handed back at enrollment.
+
+        The enrollment chain is the CA that signs *client* certificates.
+        Trusting it alone refused every service behind a publicly issued
+        certificate (nginx with a Let's Encrypt or Tailscale cert) with
+        CERTIFICATE_VERIFY_FAILED, so no pod got past enrollment. Keeping
+        it in the bundle still accepts a service whose TLS certificate the
+        same private CA issued.
+
+        :param service_ca_path: Path of the enrollment CA chain PEM.
+
+        :returns: Path of the written bundle.
+    """
+    bundle_path = os.path.join(os.path.dirname(service_ca_path), SERVER_TRUST_BUNDLE_FILENAME)
+    with open(certifi.where(), "r") as public_roots:
+        bundle_text = public_roots.read().rstrip("\n") + "\n"
+    with open(service_ca_path, "r") as service_chain:
+        bundle_text = bundle_text + service_chain.read()
+
+    existing = None
+    if os.path.exists(bundle_path):
+        with open(bundle_path, "r") as current:
+            existing = current.read()
+    if existing != bundle_text:
+        staging_path = bundle_path + ".tmp"
+        with open(staging_path, "w") as staged:
+            staged.write(bundle_text)
+        os.replace(staging_path, bundle_path)
+
+    rtnval = bundle_path
+    return rtnval
 
 
 def normalize_base_path(base_path: Optional[str]) -> str:
@@ -120,8 +167,10 @@ class PychestrateMtlsClient(PychestrateRestClient):
         """
             Overrides :meth:`RestClientBase.authenticate` to build a session that
             uses mutual TLS instead of a bearer token. The client certificate +
-            key are mounted via :attr:`Session.cert`, and the service CA chain is
-            mounted via :attr:`Session.verify`.
+            key are mounted via :attr:`Session.cert`; the service's TLS
+            certificate is verified against the public roots plus the service
+            CA chain (:func:`build_server_trust_bundle`) via
+            :attr:`Session.verify`.
 
             :returns: None
         """
@@ -129,8 +178,10 @@ class PychestrateMtlsClient(PychestrateRestClient):
 
         session = Session()
         session.cert = (credential.client_cert_path, credential.client_key_path)
-        session.verify = credential.service_ca_path
+        trust_bundle_path = build_server_trust_bundle(
+            service_ca_path=credential.service_ca_path)
+        session.verify = trust_bundle_path
 
-        self._verify_certificate = credential.service_ca_path
+        self._verify_certificate = trust_bundle_path
         self._session = session
         return
