@@ -61,7 +61,13 @@ from ccai.pychestrate.client.heartbeat import (
     HeartbeatAspects,
     run_heartbeat_loop,
 )
+from ccai.pychestrate.client.shutdown import ShutdownController
 from ccai.pychestrate.client.state import ClientState
+
+
+#: How long ``run``'s main thread blocks in each join before checking
+#: again, so it keeps servicing SIGINT/SIGTERM.
+RUN_JOIN_SLICE_SECONDS = 0.5
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -209,8 +215,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         Implements the ``run`` subcommand — the normal pod-side mode.
 
         Starts the heartbeat loop and the dispatch-consumer loop on two
-        daemon threads and blocks until either loop exits (both honor
-        SIGTERM/SIGINT for a graceful shutdown).
+        daemon threads. SIGINT/SIGTERM handlers are installed here, on the
+        main thread (the only thread Python delivers signals to): the first
+        signal stops the dispatch consumer once its current job is done and
+        acked, then the heartbeat, and ``run`` exits 0; a second signal
+        exits at once with code 130.
 
         :param args: Parsed CLI arguments.
 
@@ -230,16 +239,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     thread_errors: List[str] = []
 
+    # The heartbeat keeps running until the dispatch consumer is done, so
+    # the service still sees the pod alive while a last job finishes.
+    shutdown = ShutdownController()
+    heartbeat_shutdown = ShutdownController()
+
     def _heartbeat_thread() -> None:
         try:
-            run_heartbeat_loop(state=state, aspects=heartbeat_aspects)
+            run_heartbeat_loop(
+                state=state, aspects=heartbeat_aspects, shutdown=heartbeat_shutdown)
         except (BadParameterError, ConfigurationError) as hberr:
             thread_errors.append("heartbeat loop: {}".format(hberr))
         return
 
     def _dispatch_thread() -> None:
         try:
-            run_dispatch_consumer_loop(state=state, aspects=consumer_aspects)
+            run_dispatch_consumer_loop(
+                state=state, aspects=consumer_aspects, shutdown=shutdown)
         except (BadParameterError, ConfigurationError) as dcerr:
             thread_errors.append("dispatch consumer: {}".format(dcerr))
         return
@@ -249,12 +265,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     dc_thread = threading.Thread(
         target=_dispatch_thread, name="pychestrate-dispatch", daemon=True)
 
-    print("pychestrate-client: starting heartbeat + dispatch-consumer loops.")
-    hb_thread.start()
-    dc_thread.start()
+    restore_handlers = shutdown.install_signal_handlers()
+    try:
+        print("pychestrate-client: starting heartbeat + dispatch-consumer loops.")
+        hb_thread.start()
+        dc_thread.start()
 
-    hb_thread.join()
-    dc_thread.join()
+        # Join in short slices: a blocking join would keep the main thread
+        # from running the signal handlers promptly.
+        announced_wait = False
+        while dc_thread.is_alive():
+            dc_thread.join(timeout=RUN_JOIN_SLICE_SECONDS)
+            if shutdown.is_stop_requested() and dc_thread.is_alive() and not announced_wait:
+                announced_wait = True
+                print("pychestrate-client: stopping; waiting for the current dispatch "
+                      "poll (up to {} s) or job to finish. Send the signal again to "
+                      "exit now.".format(consumer_aspects.poll_timeout_seconds))
+
+        heartbeat_shutdown.request_stop(reason="the dispatch consumer stopped")
+        while hb_thread.is_alive():
+            hb_thread.join(timeout=RUN_JOIN_SLICE_SECONDS)
+    finally:
+        restore_handlers()
 
     if len(thread_errors) > 0:
         for nxterr in thread_errors:

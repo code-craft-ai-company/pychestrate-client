@@ -38,7 +38,7 @@ __credits__ = []
 from typing import Any, Callable, Dict, Optional
 
 import logging
-import signal
+import random
 import time
 import uuid
 
@@ -99,6 +99,10 @@ from ccai.pychestrate.client.result_uploader import (
     upload_rpa_results,
     upload_run_results,
 )
+from ccai.pychestrate.client.shutdown import (
+    ShutdownController,
+    install_handlers_if_main_thread,
+)
 from ccai.pychestrate.client.signing_keys import refresh_signing_keys
 from ccai.pychestrate.client.state import ClientState
 from ccai.pychestrate.client.testbase_executor import (
@@ -127,7 +131,25 @@ DEFAULT_DISPATCH_POLL_TIMEOUT_SECONDS = 30
 DEFAULT_DISPATCH_BASE_BACKOFF_SECONDS = 5.0
 DEFAULT_DISPATCH_MAX_BACKOFF_SECONDS = 300.0
 
+#: Shortest time between the starts of two polls. A poll that comes back
+#: sooner (an immediate 204, a proxy answering for the service) is followed
+#: by a pause, so the loop cannot spin against the server.
+DEFAULT_DISPATCH_MIN_POLL_INTERVAL_SECONDS = 1.0
+#: Random extra pause (0 to this many seconds) added after an early poll so
+#: many pods do not re-poll in lock step.
+DEFAULT_DISPATCH_POLL_JITTER_SECONDS = 0.5
+#: After this many polls in a row come back early, say so at INFO.
+EARLY_POLL_NOTICE_THRESHOLD = 5
+
 logger = logging.getLogger(__name__)
+
+
+class DispatchPollAnomaly(Exception):
+    """
+        Raised when the dispatch poll gets an answer that is neither a
+        dispatch nor the documented 204 timeout -- typically a non-JSON
+        200 body from a login page, proxy or wrong base URL.
+    """
 
 
 class DispatchConsumerAspects:
@@ -147,6 +169,9 @@ class DispatchConsumerAspects:
                  max_backoff_seconds: float = DEFAULT_DISPATCH_MAX_BACKOFF_SECONDS,
                  max_iterations: Optional[int] = None,
                  sleep_func: Optional[Callable[[float], None]] = None,
+                 min_poll_interval_seconds: float =
+                 DEFAULT_DISPATCH_MIN_POLL_INTERVAL_SECONDS,
+                 poll_jitter_seconds: float = DEFAULT_DISPATCH_POLL_JITTER_SECONDS,
                  executor_aspects: TestbaseExecutorAspects =
                  DEFAULT_TESTBASE_EXECUTOR_ASPECTS,
                  build_executor_aspects: BuildExecutorAspects =
@@ -173,8 +198,16 @@ class DispatchConsumerAspects:
                                         back-off interval.
             :param max_iterations: Optional iteration cap (primarily for
                                    tests). ``None`` runs until signalled.
-            :param sleep_func: Optional sleep override; defaults to
-                               :func:`time.sleep`.
+            :param sleep_func: Optional sleep override (tests). Without one
+                               the loop pauses on its
+                               :class:`ShutdownController`, so a stop
+                               request ends the pause at once.
+            :param min_poll_interval_seconds: Shortest time between the
+                                              starts of two polls; a poll
+                                              that returns sooner is
+                                              followed by a pause.
+            :param poll_jitter_seconds: Upper bound of the random extra
+                                        pause added after an early poll.
             :param executor_aspects: Aspects forwarded to the testbase
                                      executor for each dispatched
                                      ``job_kind=test`` job.
@@ -211,12 +244,23 @@ class DispatchConsumerAspects:
                 "'base_backoff_seconds'.",
                 "max_backoff_seconds",
                 "Pass a value not smaller than 'base_backoff_seconds'.")
+        if min_poll_interval_seconds < 0:
+            raise BadParameterError(
+                "DispatchConsumerAspects requires 'min_poll_interval_seconds' >= 0.",
+                "min_poll_interval_seconds", "Pass a non-negative number of seconds.")
+        if poll_jitter_seconds < 0:
+            raise BadParameterError(
+                "DispatchConsumerAspects requires 'poll_jitter_seconds' >= 0.",
+                "poll_jitter_seconds", "Pass a non-negative number of seconds.")
 
         self._poll_timeout_seconds = poll_timeout_seconds
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
         self._max_iterations = max_iterations
+        self._sleep_overridden = sleep_func is not None
         self._sleep_func = sleep_func if sleep_func is not None else time.sleep
+        self._min_poll_interval_seconds = min_poll_interval_seconds
+        self._poll_jitter_seconds = poll_jitter_seconds
         self._executor_aspects = executor_aspects
         self._build_executor_aspects = build_executor_aspects
         self._provision_executor_aspects = provision_executor_aspects
@@ -246,6 +290,18 @@ class DispatchConsumerAspects:
     @property
     def sleep_func(self) -> Callable[[float], None]:
         return self._sleep_func
+
+    @property
+    def sleep_overridden(self) -> bool:
+        return self._sleep_overridden
+
+    @property
+    def min_poll_interval_seconds(self) -> float:
+        return self._min_poll_interval_seconds
+
+    @property
+    def poll_jitter_seconds(self) -> float:
+        return self._poll_jitter_seconds
 
     @property
     def executor_aspects(self) -> TestbaseExecutorAspects:
@@ -300,11 +356,12 @@ def poll_next_dispatch(client: PychestrateMtlsClient, client_id: str,
         codegen'd ``clients.clients_dispatches_next`` method.
 
         The endpoint answers HTTP 204 with an empty body when the wait
-        window elapses with no work. The codegen'd method decodes the
-        response body as JSON unconditionally, so an empty 204 surfaces
-        as a :class:`ValueError`. Because 204 IS the documented timeout
-        contract, a decode failure following a clean (non-raising)
-        ``perform_call`` is treated as "no dispatch available".
+        window elapses with no work, and the codegen'd method returns
+        ``None`` for it. A :class:`ValueError` therefore means the body of
+        a 200 answer was not JSON -- a login page, a proxy's page, or a
+        base URL missing ``/api/v1`` -- and is raised as
+        :class:`DispatchPollAnomaly` so the loop backs off instead of
+        re-polling at once.
 
         :param client: A configured :class:`PychestrateMtlsClient`.
         :param client_id: The assigned client UUID.
@@ -312,22 +369,28 @@ def poll_next_dispatch(client: PychestrateMtlsClient, client_id: str,
 
         :returns: The ``Pendingdispatch`` object on a dispatch, or
                   ``None`` on a timeout.
-        :raises: requests.RequestException, codecraftai HTTP error types
+        :raises: DispatchPollAnomaly, requests.RequestException,
+                 codecraftai HTTP error types
     """
     try:
         pending = client.clients.clients_dispatches_next(
             client_id=client_id,
             timeout_seconds=timeout_seconds,
         )
-    except ValueError:
-        # An expected 204 with an empty body; perform_call did not raise
-        # an HTTP error, so this is simply a long-poll timeout.
+    except ValueError as decode_err:
+        errmsg = (
+            "the dispatch poll answered with a body that is not JSON ({}); the "
+            "configured service URL may be wrong (for example missing /api/v1) "
+            "or a proxy or login page answered instead of the service".format(
+                decode_err)
+        )
+        raise DispatchPollAnomaly(errmsg) from decode_err
+
+    if pending is None:
         logger.debug(
             "pychestrate-client: dispatch long-poll timed out (204) for "
             "client_id=%s.", client_id,
         )
-        rtnval = None
-        return rtnval
 
     rtnval = pending
     return rtnval
@@ -816,17 +879,27 @@ def handle_one_dispatch(client: PychestrateMtlsClient, state: ClientState,
 def run_dispatch_consumer_loop(state: ClientState,
                                aspects: DispatchConsumerAspects =
                                DEFAULT_DISPATCH_CONSUMER_ASPECTS,
-                               stop_predicate: Optional[Callable[[], bool]] = None
+                               stop_predicate: Optional[Callable[[], bool]] = None,
+                               shutdown: Optional[ShutdownController] = None
                                ) -> int:
     """
-        Runs the dispatch-consumer loop until interrupted by
-        SIGTERM/SIGINT, the ``stop_predicate`` returns ``True``, or
-        ``aspects.max_iterations`` is exhausted.
+        Runs the dispatch-consumer loop until a stop is requested
+        (SIGTERM/SIGINT, or the ``shutdown`` controller), the
+        ``stop_predicate`` returns ``True``, or ``aspects.max_iterations``
+        is exhausted.
 
         Each iteration long-polls for the next dispatch. On a timeout the
-        loop simply re-polls. On a dispatch it verifies, executes, and
-        acks. On a transport failure it logs and applies an exponential
-        back-off (clamped at ``max_backoff_seconds``).
+        loop re-polls, but never sooner than ``min_poll_interval_seconds``
+        (plus jitter) after the previous poll started. On a dispatch it
+        verifies, executes, and acks. On a transport failure or an answer
+        that is not a dispatch (:class:`DispatchPollAnomaly`) it logs a
+        warning and applies an exponential back-off (clamped at
+        ``max_backoff_seconds``).
+
+        A stop request is honored between iterations: a job already
+        running finishes and is acked first, and a dispatch handed out by
+        the last poll is acked as rejected rather than started. Pauses end
+        as soon as a stop is requested.
 
         The consumer fails closed on the envelope signing keys: each
         dispatched envelope is verified against a key resolved for its
@@ -839,6 +912,11 @@ def run_dispatch_consumer_loop(state: ClientState,
         :param aspects: Behavior-shaping aspects.
         :param stop_predicate: Optional callable returning ``True`` to
                                halt the loop. Useful for tests.
+        :param shutdown: The stop request to honor. ``run`` passes the one
+                         whose signal handlers it installed on the main
+                         thread. When omitted the loop makes its own and, if
+                         it is on the main thread, installs SIGINT/SIGTERM
+                         handlers for it.
 
         :returns: The number of completed iterations.
         :raises: ConfigurationError
@@ -854,34 +932,28 @@ def run_dispatch_consumer_loop(state: ClientState,
             logger.warning(
                 "pychestrate-client: capability advertisement raised (loop continues): %s", adverr)
 
-    sleep_func = aspects.sleep_func
-    stop_flag = {"requested": False}
+    restore_handlers = None
+    if shutdown is None:
+        shutdown = ShutdownController()
+        restore_handlers = install_handlers_if_main_thread(shutdown=shutdown)
 
-    def _on_signal(signum: int, frame: Any) -> None:
-        logger.info(
-            "pychestrate-client: received signal %d; stopping dispatch "
-            "consumer loop.", signum,
-        )
-        stop_flag["requested"] = True
+    def _pause(seconds: float) -> None:
+        if aspects.sleep_overridden:
+            aspects.sleep_func(seconds)
+        else:
+            shutdown.wait(timeout_seconds=seconds)
         return
-
-    previous_term = None
-    previous_int = None
-    try:
-        previous_term = signal.signal(signal.SIGTERM, _on_signal)
-    except (ValueError, OSError):
-        previous_term = None
-    try:
-        previous_int = signal.signal(signal.SIGINT, _on_signal)
-    except (ValueError, OSError):
-        previous_int = None
 
     iterations = 0
     backoff = aspects.base_backoff_seconds
+    early_polls_in_a_row = 0
 
     try:
         while True:
-            if stop_flag["requested"]:
+            if shutdown.is_stop_requested():
+                logger.info(
+                    "pychestrate-client: dispatch consumer stopping (%s).",
+                    shutdown.reason)
                 break
             if stop_predicate is not None and stop_predicate():
                 break
@@ -892,18 +964,26 @@ def run_dispatch_consumer_loop(state: ClientState,
             iterations += 1
 
             poll_failed = False
+            returned_early = False
+            poll_started = time.monotonic()
             try:
                 pending = poll_next_dispatch(
                     client=client,
                     client_id=client_id,
                     timeout_seconds=aspects.poll_timeout_seconds,
                 )
+                poll_elapsed = time.monotonic() - poll_started
 
                 if pending is None:
                     logger.debug(
                         "pychestrate-client: no dispatch available "
                         "(iteration=%d).", iterations,
                     )
+                    returned_early = poll_elapsed < aspects.min_poll_interval_seconds
+                elif shutdown.is_stop_requested():
+                    # The last poll handed out a job after the stop request;
+                    # tell the service instead of dropping it silently.
+                    reject_dispatch_for_shutdown(client=client, pending=pending)
                 else:
                     handle_one_dispatch(
                         client=client,
@@ -915,9 +995,9 @@ def run_dispatch_consumer_loop(state: ClientState,
             except Exception as polerr:
                 poll_failed = True
                 logger.warning(
-                    "pychestrate-client: dispatch poll/handle raised an "
-                    "exception (iteration=%d): %s",
-                    iterations, polerr,
+                    "pychestrate-client: dispatch poll/handle failed "
+                    "(iteration=%d): %s; backing off %.1f s.",
+                    iterations, polerr, backoff,
                 )
 
             if poll_failed:
@@ -926,21 +1006,54 @@ def run_dispatch_consumer_loop(state: ClientState,
                 if doubled > aspects.max_backoff_seconds:
                     doubled = aspects.max_backoff_seconds
                 backoff = doubled
-                sleep_func(next_sleep)
+                _pause(next_sleep)
             else:
                 backoff = aspects.base_backoff_seconds
 
+            if returned_early:
+                early_polls_in_a_row += 1
+                if early_polls_in_a_row == EARLY_POLL_NOTICE_THRESHOLD:
+                    logger.info(
+                        "pychestrate-client: the last %d dispatch polls returned "
+                        "without waiting (poll timeout %d s); pausing between "
+                        "polls. The service may not be long-polling.",
+                        early_polls_in_a_row, aspects.poll_timeout_seconds)
+                gap = aspects.min_poll_interval_seconds + random.uniform(
+                    0, aspects.poll_jitter_seconds)
+                _pause(gap)
+            else:
+                early_polls_in_a_row = 0
+
     finally:
-        if previous_term is not None:
-            try:
-                signal.signal(signal.SIGTERM, previous_term)
-            except (ValueError, OSError):
-                pass
-        if previous_int is not None:
-            try:
-                signal.signal(signal.SIGINT, previous_int)
-            except (ValueError, OSError):
-                pass
+        if restore_handlers is not None:
+            restore_handlers()
 
     rtnval = iterations
     return rtnval
+
+
+def reject_dispatch_for_shutdown(client: PychestrateMtlsClient, pending: Any) -> None:
+    """
+        Acknowledges a dispatch that arrived after a stop was requested,
+        with a note saying it was not started, so the run does not sit in
+        the dispatched state waiting for a pod that has gone.
+
+        :param client: A configured :class:`PychestrateMtlsClient`.
+        :param pending: The ``Pendingdispatch`` returned by the last poll.
+
+        :returns: None
+        :raises: requests.RequestException, codecraftai HTTP error types
+    """
+    pending_dict = _pending_to_dict(pending=pending)
+    run_id = str(pending_dict.get("run_id", ""))
+    logger.warning(
+        "pychestrate-client: dispatch run_id=%s arrived while stopping; "
+        "rejecting it without starting the job.", run_id)
+    acknowledge_dispatch(
+        client=client, run_id=run_id,
+        envelope_id=str(pending_dict.get("envelope_id", "")),
+        dispatch_attempt_id=str(pending_dict.get("dispatch_attempt_id", "")),
+        client_id=str(pending_dict.get("client_id", "")),
+        local_run_id=str(uuid.uuid4()),
+        notes="REJECTED: pychestrate-client is shutting down; the job was not started.")
+    return

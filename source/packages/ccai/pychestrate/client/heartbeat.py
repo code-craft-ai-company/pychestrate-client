@@ -23,7 +23,6 @@ from typing import Any, Callable, Optional
 
 import logging
 import os
-import signal
 import time
 
 from ccai.errors.exceptions import BadParameterError, ConfigurationError
@@ -34,6 +33,10 @@ from ccai.pychestrate.client.cancel_registry import (
     CANCEL_REGISTRY,
     extract_cancellations,
     register_cancellations,
+)
+from ccai.pychestrate.client.shutdown import (
+    ShutdownController,
+    install_handlers_if_main_thread,
 )
 from ccai.pychestrate.client.state import ClientState
 
@@ -69,7 +72,9 @@ class HeartbeatAspects:
                                          interval.
             :param max_iterations: Optional iteration cap (primarily for tests).
                                     ``None`` runs until interrupted by a signal.
-            :param sleep_func: Optional sleep override; defaults to ``time.sleep``.
+            :param sleep_func: Optional sleep override (tests). Without one the
+                               loop pauses on its :class:`ShutdownController`,
+                               so a stop request ends the pause at once.
 
             :raises: BadParameterError
         """
@@ -90,6 +95,7 @@ class HeartbeatAspects:
         self._base_backoff_seconds = base_backoff_seconds
         self._max_backoff_seconds = max_backoff_seconds
         self._max_iterations = max_iterations
+        self._sleep_overridden = sleep_func is not None
         self._sleep_func = sleep_func if sleep_func is not None else time.sleep
         return
 
@@ -112,6 +118,10 @@ class HeartbeatAspects:
     @property
     def sleep_func(self) -> Callable[[float], None]:
         return self._sleep_func
+
+    @property
+    def sleep_overridden(self) -> bool:
+        return self._sleep_overridden
 
 
 DEFAULT_HEARTBEAT_ASPECTS = HeartbeatAspects()
@@ -211,52 +221,53 @@ def send_one_heartbeat(client: PychestrateMtlsClient, client_id: str) -> int:
 
 def run_heartbeat_loop(state: ClientState,
                        aspects: HeartbeatAspects = DEFAULT_HEARTBEAT_ASPECTS,
-                       stop_predicate: Optional[Callable[[], bool]] = None) -> int:
+                       stop_predicate: Optional[Callable[[], bool]] = None,
+                       shutdown: Optional[ShutdownController] = None) -> int:
     """
-        Runs the periodic heartbeat loop until interrupted by SIGTERM/SIGINT,
-        the ``stop_predicate`` returns ``True``, or ``aspects.max_iterations``
+        Runs the periodic heartbeat loop until a stop is requested
+        (SIGTERM/SIGINT, or the ``shutdown`` controller), the
+        ``stop_predicate`` returns ``True``, or ``aspects.max_iterations``
         is exhausted.
 
-        On a successful heartbeat (HTTP 2xx) the loop sleeps for
-        ``interval_seconds``. On a failure it logs the error, sleeps for an
+        On a successful heartbeat (HTTP 2xx) the loop pauses for
+        ``interval_seconds``. On a failure it logs the error, pauses for an
         exponentially-doubling back-off (clamped at ``max_backoff_seconds``),
-        and retries.
+        and retries. Pauses end as soon as a stop is requested.
 
         :param state: The :class:`ClientState` to drive the client from.
         :param aspects: Behavior-shaping aspects.
         :param stop_predicate: Optional callable returning ``True`` to halt
                                 the loop. Useful for tests.
+        :param shutdown: The stop request to honor. ``run`` passes the one
+                         whose signal handlers it installed on the main
+                         thread. When omitted the loop makes its own and, if
+                         it is on the main thread, installs SIGINT/SIGTERM
+                         handlers for it.
 
         :returns: The number of completed iterations.
     """
     client = build_client_from_state(state=state)
     client_id = state.read_client_id()
-    sleep_func = aspects.sleep_func
 
-    stop_flag = {"requested": False}
+    restore_handlers = None
+    if shutdown is None:
+        shutdown = ShutdownController()
+        restore_handlers = install_handlers_if_main_thread(shutdown=shutdown)
 
-    def _on_signal(signum: int, frame: Any) -> None:
-        logger.info("pychestrate-client: received signal %d; stopping heartbeat loop.", signum)
-        stop_flag["requested"] = True
+    def _pause(seconds: float) -> None:
+        if aspects.sleep_overridden:
+            aspects.sleep_func(seconds)
+        else:
+            shutdown.wait(timeout_seconds=seconds)
         return
-
-    previous_term = None
-    previous_int = None
-    try:
-        previous_term = signal.signal(signal.SIGTERM, _on_signal)
-    except (ValueError, OSError):
-        previous_term = None
-    try:
-        previous_int = signal.signal(signal.SIGINT, _on_signal)
-    except (ValueError, OSError):
-        previous_int = None
 
     iterations = 0
     backoff = aspects.base_backoff_seconds
 
     try:
         while True:
-            if stop_flag["requested"]:
+            if shutdown.is_stop_requested():
+                logger.info("pychestrate-client: heartbeat loop stopping (%s).", shutdown.reason)
                 break
             if stop_predicate is not None and stop_predicate():
                 break
@@ -299,19 +310,11 @@ def run_heartbeat_loop(state: ClientState,
                     doubled = aspects.max_backoff_seconds
                 backoff = doubled
 
-            sleep_func(next_sleep)
+            _pause(next_sleep)
 
     finally:
-        if previous_term is not None:
-            try:
-                signal.signal(signal.SIGTERM, previous_term)
-            except (ValueError, OSError):
-                pass
-        if previous_int is not None:
-            try:
-                signal.signal(signal.SIGINT, previous_int)
-            except (ValueError, OSError):
-                pass
+        if restore_handlers is not None:
+            restore_handlers()
 
     rtnval = iterations
     return rtnval

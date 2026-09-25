@@ -7,6 +7,8 @@
 import base64
 import os
 import tempfile
+import threading
+import time
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -18,10 +20,13 @@ from ccai.errors.exceptions import BadParameterError
 from ccai.pychestrate.client import dispatch_consumer as dc_mod
 from ccai.pychestrate.client.dispatch_consumer import (
     DispatchConsumerAspects,
+    DispatchPollAnomaly,
     handle_one_dispatch,
+    poll_next_dispatch,
     run_dispatch_consumer_loop,
 )
 from ccai.pychestrate.client.envelope_verifier import serialize_envelope_canonical
+from ccai.pychestrate.client.shutdown import ShutdownController
 from ccai.pychestrate.client.state import ClientState
 from ccai.pychestrate.client.testbase_executor import (
     RUN_STATUS_SUCCEEDED,
@@ -146,24 +151,30 @@ class _FakeResultsGroup:
 
 class _FakeClientsGroup:
     """
-        Serves a scripted sequence of dispatch results.
+        Serves a scripted sequence of dispatch results. ``None`` is a
+        long-poll timeout (the codegen'd method returns None for a 204); an
+        exception instance is raised; anything else is returned as the
+        pending dispatch. ``on_poll`` (optional) runs inside every poll.
     """
 
-    def __init__(self, sequence):
+    def __init__(self, sequence, on_poll=None):
         self._sequence = list(sequence)
         self._cursor = 0
+        self._on_poll = on_poll
         self.poll_count = 0
         return
 
     def clients_dispatches_next(self, client_id, timeout_seconds=30, **kwargs):
         self.poll_count += 1
+        if self._on_poll is not None:
+            self._on_poll()
         if self._cursor >= len(self._sequence):
             # Past the script: behave like a long-poll timeout (204).
-            raise ValueError("No content")
+            return None
         item = self._sequence[self._cursor]
         self._cursor += 1
-        if item is None:
-            raise ValueError("No content")
+        if isinstance(item, Exception):
+            raise item
         return item
 
 
@@ -172,8 +183,8 @@ class _FakeRestClient:
         Minimal stand-in for :class:`PychestrateMtlsClient`.
     """
 
-    def __init__(self, sequence, signing_keys=None):
-        self.clients = _FakeClientsGroup(sequence)
+    def __init__(self, sequence, signing_keys=None, on_poll=None):
+        self.clients = _FakeClientsGroup(sequence, on_poll=on_poll)
         self.dispatch = _FakeDispatchGroup(signing_keys=signing_keys)
         self.progress = _FakeProgressGroup()
         self.results = _FakeResultsGroup()
@@ -561,7 +572,7 @@ def test_consumer_loop_handles_dispatch_then_timeouts():
         serialize_envelope_canonical(envelope)).hex()
     pending = _pending_dict(envelope, signature_hex)
 
-    # One real dispatch, then two long-poll timeouts (None -> ValueError).
+    # One real dispatch, then two long-poll timeouts (None).
     sequence = [pending, None, None]
 
     executed = {"count": 0}
@@ -796,4 +807,201 @@ def test_handle_one_dispatch_upload_failure_still_acks():
                 state=state, run_id=envelope["run_id"]))
     finally:
         dc_mod.execute_job_envelope = original_execute
+    return
+
+
+class _PauseRecorder:
+    """
+        Records every pause the consumer loop requests.
+    """
+
+    def __init__(self):
+        self.calls = []
+        return
+
+    def __call__(self, seconds):
+        self.calls.append(seconds)
+        return
+
+
+def _run_loop_with_fake_client(fake_client, aspects, shutdown=None):
+    """
+        Runs the consumer loop against ``fake_client`` with a throw-away
+        enrolled state and returns the iteration count.
+    """
+    signing_key = Ed25519PrivateKey.generate()
+    original_build = dc_mod.build_client_from_state
+    dc_mod.build_client_from_state = lambda state: fake_client
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(
+                os.path.join(tmpdir, "state"), signing_key)
+            rtnval = run_dispatch_consumer_loop(
+                state=state, aspects=aspects, shutdown=shutdown)
+    finally:
+        dc_mod.build_client_from_state = original_build
+    return rtnval
+
+
+def test_poll_next_dispatch_raises_anomaly_on_non_json_answer():
+    """
+    **Feature: dispatch polling (CLI-06)**
+    **Property: A 200 answer whose body is not JSON (the codegen'd method
+    raises ValueError) is reported as a DispatchPollAnomaly, not as a
+    long-poll timeout.**
+    """
+    fake_client = _FakeRestClient(
+        sequence=[ValueError("Expecting value: line 1 column 1 (char 0)")])
+
+    raised = None
+    try:
+        poll_next_dispatch(client=fake_client, client_id="client-1", timeout_seconds=30)
+    except DispatchPollAnomaly as anomaly:
+        raised = anomaly
+
+    testbase.assert_true(raised is not None)
+    return
+
+
+def test_poll_next_dispatch_returns_none_on_timeout():
+    """
+    **Feature: dispatch polling (CLI-06)**
+    **Property: A 204 long-poll timeout (the codegen'd method returns
+    None) yields None.**
+    """
+    fake_client = _FakeRestClient(sequence=[None])
+
+    pending = poll_next_dispatch(client=fake_client, client_id="client-1", timeout_seconds=30)
+
+    testbase.assert_true(pending is None)
+    return
+
+
+def test_consumer_loop_pauses_after_an_early_poll():
+    """
+    **Feature: dispatch polling (CLI-06)**
+    **Property: A poll that returns before min_poll_interval_seconds is
+    followed by a pause of the minimum interval plus jitter, so the loop
+    cannot spin against the server.**
+    """
+    pauses = _PauseRecorder()
+    aspects = DispatchConsumerAspects(
+        poll_timeout_seconds=30,
+        max_iterations=3,
+        sleep_func=pauses,
+        min_poll_interval_seconds=1.0,
+        poll_jitter_seconds=0.5,
+        advertise_capabilities=False,
+    )
+
+    _run_loop_with_fake_client(
+        fake_client=_FakeRestClient(sequence=[None, None, None]), aspects=aspects)
+
+    testbase.assert_equal(len(pauses.calls), 3)
+    testbase.assert_true(all(1.0 <= seconds <= 1.5 for seconds in pauses.calls))
+    return
+
+
+def test_consumer_loop_backs_off_on_poll_anomaly():
+    """
+    **Feature: dispatch polling (CLI-06)**
+    **Property: Repeated non-JSON answers back off exponentially from
+    base_backoff_seconds instead of re-polling at once.**
+    """
+    pauses = _PauseRecorder()
+    aspects = DispatchConsumerAspects(
+        poll_timeout_seconds=30,
+        base_backoff_seconds=5.0,
+        max_backoff_seconds=300.0,
+        max_iterations=3,
+        sleep_func=pauses,
+        advertise_capabilities=False,
+    )
+    sequence = [ValueError("not json"), ValueError("not json"), ValueError("not json")]
+
+    _run_loop_with_fake_client(
+        fake_client=_FakeRestClient(sequence=sequence), aspects=aspects)
+
+    testbase.assert_equal(pauses.calls, [5.0, 10.0, 20.0])
+    return
+
+
+def test_consumer_loop_rejects_dispatch_that_arrives_while_stopping():
+    """
+    **Feature: graceful stop (CLI-07)**
+    **Property: A dispatch handed out by the poll that was in flight when
+    the stop was requested is acked as rejected, and its job is not
+    started.**
+    """
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    shutdown = ShutdownController()
+    fake_client = _FakeRestClient(
+        sequence=[pending],
+        on_poll=lambda: shutdown.request_stop(reason="test stop during poll"))
+
+    executed = {"count": 0}
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
+        executed["count"] += 1
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        aspects = DispatchConsumerAspects(
+            poll_timeout_seconds=30,
+            max_iterations=5,
+            sleep_func=lambda seconds: None,
+            advertise_capabilities=False,
+        )
+        _run_loop_with_fake_client(
+            fake_client=fake_client, aspects=aspects, shutdown=shutdown)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+
+    testbase.assert_equal(executed["count"], 0)
+    testbase.assert_equal(len(fake_client.dispatch.acks), 1)
+    ack_notes = fake_client.dispatch.acks[0][1].notes
+    testbase.assert_true(ack_notes.startswith("REJECTED: pychestrate-client is shutting down"))
+    return
+
+
+def test_consumer_loop_stop_ends_a_pause_promptly():
+    """
+    **Feature: graceful stop (CLI-07)**
+    **Property: A stop requested while the loop pauses between polls ends
+    the pause at once rather than after the rest of the interval.**
+    """
+    shutdown = ShutdownController()
+    fake_client = _FakeRestClient(sequence=[None])
+    aspects = DispatchConsumerAspects(
+        poll_timeout_seconds=30,
+        min_poll_interval_seconds=30.0,
+        poll_jitter_seconds=0.0,
+        advertise_capabilities=False,
+    )
+
+    loop_thread = threading.Thread(
+        target=_run_loop_with_fake_client,
+        kwargs={"fake_client": fake_client, "aspects": aspects, "shutdown": shutdown},
+        daemon=True)
+    loop_thread.start()
+
+    deadline = time.monotonic() + 5.0
+    while fake_client.clients.poll_count == 0 and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    stop_requested_at = time.monotonic()
+    shutdown.request_stop(reason="test stop during pause")
+    loop_thread.join(timeout=5.0)
+    stop_seconds = time.monotonic() - stop_requested_at
+
+    testbase.assert_true(loop_thread.is_alive() is False)
+    testbase.assert_true(stop_seconds < 2.0)
     return

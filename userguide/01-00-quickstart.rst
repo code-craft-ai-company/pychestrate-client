@@ -59,13 +59,22 @@ Once enrolled, start the heartbeat:
 
 The runtime will ping ``GET /api/v1/clients/{client_id}/heartbeat`` every
 30 seconds (override with ``--interval <seconds>``). Failures trigger an
-exponentially-doubling back-off (base 5s, capped at 300s). The loop
-shuts down gracefully on ``SIGTERM`` or ``SIGINT``.
+exponentially-doubling back-off (base 5s, capped at 300s). ``SIGTERM`` or
+``SIGINT`` (Ctrl+C) stops it at once, even in the middle of a wait.
 
-In M2 and M3 the ``heartbeat`` subcommand will be folded into a full
-``run`` subcommand that also long-polls for dispatched jobs, shells out
-to ``codecraftai-testbase`` to execute them, and pushes progress + results
-back to the service.
+The ``run`` subcommand is the normal pod mode: it heartbeats and also
+long-polls for dispatched jobs, runs them, and pushes progress and results
+back to the service. Polls are never closer than about one second apart,
+even when the service answers at once, and an answer that is not a
+dispatch (for example a login page because the service URL is wrong) is
+logged as a warning and backed off.
+
+Stopping ``run``: the first ``SIGTERM`` or ``SIGINT`` takes no new work,
+lets a job that is already running finish and report, waits for the poll
+in flight (up to the poll timeout, 30 seconds by default), and exits 0. A
+job handed out by that last poll is rejected back to the service instead
+of being started. A second ``SIGTERM`` or ``SIGINT`` exits immediately
+with code 130.
 
 State Directory Layout
 ======================

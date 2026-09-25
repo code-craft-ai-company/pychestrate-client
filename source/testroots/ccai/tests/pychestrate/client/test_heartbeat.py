@@ -6,6 +6,8 @@
 
 import os
 import tempfile
+import threading
+import time
 
 from ccai import testbase
 
@@ -13,6 +15,7 @@ from ccai.errors.exceptions import BadParameterError
 
 from ccai.pychestrate.client import heartbeat as heartbeat_mod
 from ccai.pychestrate.client.heartbeat import HeartbeatAspects, run_heartbeat_loop
+from ccai.pychestrate.client.shutdown import ShutdownController
 from ccai.pychestrate.client.state import ClientState
 
 
@@ -195,6 +198,53 @@ def test_heartbeat_loop_stops_on_predicate():
                 state=state, aspects=aspects, stop_predicate=_stop_after_two)
 
             testbase.assert_equal(iterations, 2)
+    finally:
+        heartbeat_mod.build_client_from_state = original_build
+        heartbeat_mod.send_one_heartbeat = original_send
+    return
+
+
+def test_heartbeat_loop_stop_ends_the_interval_pause_promptly():
+    """
+    **Feature: graceful stop (CLI-07)**
+    **Property: A stop requested while the heartbeat loop waits out its
+    interval ends the wait at once rather than after the rest of the
+    interval.**
+    """
+    sent = {"count": 0}
+
+    def _fake_send(client, client_id):
+        sent["count"] += 1
+        return 204
+
+    original_build = heartbeat_mod.build_client_from_state
+    original_send = heartbeat_mod.send_one_heartbeat
+    heartbeat_mod.build_client_from_state = lambda state: object()
+    heartbeat_mod.send_one_heartbeat = _fake_send
+
+    shutdown = ShutdownController()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(os.path.join(tmpdir, "state"))
+            aspects = HeartbeatAspects(interval_seconds=30.0)
+
+            loop_thread = threading.Thread(
+                target=run_heartbeat_loop,
+                kwargs={"state": state, "aspects": aspects, "shutdown": shutdown},
+                daemon=True)
+            loop_thread.start()
+
+            deadline = time.monotonic() + 5.0
+            while sent["count"] == 0 and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+            stop_requested_at = time.monotonic()
+            shutdown.request_stop(reason="test stop during interval")
+            loop_thread.join(timeout=5.0)
+            stop_seconds = time.monotonic() - stop_requested_at
+
+            testbase.assert_true(loop_thread.is_alive() is False)
+            testbase.assert_true(stop_seconds < 2.0)
     finally:
         heartbeat_mod.build_client_from_state = original_build
         heartbeat_mod.send_one_heartbeat = original_send
