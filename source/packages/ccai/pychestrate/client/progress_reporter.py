@@ -248,7 +248,17 @@ def _tally(jsos_entries: List[Dict[str, Any]]) -> Dict[str, int]:
     skipped = 0
     errored = 0
 
+    # The stream holds a start record (result UNSET) and a finish record
+    # for each test, so the total counts distinct tests, not records --
+    # counting records reported every test twice.
+    test_names = set()
+    unnamed_records = 0
     for entry in jsos_entries:
+        test_name = entry.get("name", None)
+        if test_name is not None and len(str(test_name)) > 0:
+            test_names.add(str(test_name))
+        else:
+            unnamed_records += 1
         result_code = str(entry.get("result", ""))
         if result_code == _RESULT_PASSED:
             passed += 1
@@ -259,7 +269,7 @@ def _tally(jsos_entries: List[Dict[str, Any]]) -> Dict[str, int]:
         elif result_code == _RESULT_ERRORED:
             errored += 1
 
-    total = len(jsos_entries)
+    total = len(test_names) + unnamed_records
     rtnval = {
         "passed": passed,
         "failed": failed,

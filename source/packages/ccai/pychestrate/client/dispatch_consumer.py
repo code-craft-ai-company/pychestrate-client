@@ -468,7 +468,10 @@ def acknowledge_dispatch(client: PychestrateMtlsClient, run_id: str,
         ack.notes = notes
 
     try:
-        client.dispatch.dispatch_ack_run(run_id=run_id, body=ack)
+        # The service answers 202 with {"status": "acked", ...}; the pinned
+        # codegen'd method expects 204 and logs any other 2xx as an ERROR
+        # (E2E-31), so name both.
+        client.dispatch.dispatch_ack_run(run_id=run_id, body=ack, exp_status=[202, 204])
     except ValueError:
         # dispatch-ack answers HTTP 204 with an empty body; an empty-body
         # JSON decode failure after a non-raising perform_call means the

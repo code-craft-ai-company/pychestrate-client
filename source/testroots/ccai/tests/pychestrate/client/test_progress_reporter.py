@@ -254,3 +254,27 @@ def test_progress_reporter_streams_records_across_start_stop():
         testbase.assert_equal(forwarded, 2)
         testbase.assert_true(len(client.progress.frames) >= 1)
     return
+
+
+def test_summary_counts_each_test_once_across_start_and_finish_records():
+    """
+    **Feature: progress summary (live E2E finding)**
+    **Property: a test's start record (UNSET) and finish record count as
+    one test -- a six-test run reported tests_total 12.**
+    """
+    all_entries = [
+        _jsos_test_record("t1", "UNSET"),
+        _jsos_test_record("t1", "PASSED"),
+        _jsos_test_record("t2", "UNSET"),
+        _jsos_test_record("t2", "FAILED"),
+        _jsos_test_record("t3", "UNSET"),
+    ]
+
+    frame = build_progress_frame(
+        run_id=RUN_ID, client_id=CLIENT_ID, all_entries=all_entries,
+        new_entries=all_entries, first_new_index=0)
+
+    testbase.assert_equal(frame.summary.tests_total, 3)
+    testbase.assert_equal(frame.summary.tests_passed, 1)
+    testbase.assert_equal(frame.summary.tests_failed, 1)
+    return
