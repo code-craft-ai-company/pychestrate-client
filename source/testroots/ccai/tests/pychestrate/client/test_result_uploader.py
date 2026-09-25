@@ -473,3 +473,24 @@ def test_upload_run_results_failed_completion_post_marks_retry():
         testbase.assert_true(run_needs_upload_retry(state=state,
                                                     run_id=RUN_ID))
     return
+
+
+def test_upload_run_results_reports_a_cancelled_run_as_cancelled():
+    """
+    **Feature: cancel (E2E-09)**
+    **Property: the manifest of a run an operator cancel stopped carries
+    terminal_outcome "cancelled", which the service keeps out of FAILED.**
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = _make_state(os.path.join(tmpdir, "state"))
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        client = _FakeRestClient()
+        aspects = ResultUploaderAspects(store_driver=_RecordingStoreDriver())
+
+        upload_run_results(
+            client=client, state=state, envelope=_sample_envelope(),
+            result_dir=result_dir, run_succeeded=False, run_cancelled=True, aspects=aspects)
+
+        _, manifest = client.results.manifests[0]
+        testbase.assert_equal(manifest.terminal_outcome, "cancelled")
+    return

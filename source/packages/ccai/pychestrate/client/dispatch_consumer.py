@@ -39,6 +39,7 @@ from typing import Any, Callable, Dict, Optional
 
 import logging
 import random
+import subprocess
 import time
 import uuid
 
@@ -74,6 +75,7 @@ from ccai.pychestrate.client.rpa_progress_reporter import (
     RpaProgressReporter,
 )
 from ccai.pychestrate.client.cancel_registry import CANCEL_REGISTRY
+from ccai.pychestrate.client.cancellable_run import make_cancellable_run
 from ccai.pychestrate.client.capabilities import advertise_pod_capabilities
 from ccai.pychestrate.client.envelope_verifier import (
     EnvelopeVerificationResult,
@@ -516,6 +518,26 @@ def _resolve_job_kind(envelope: Dict[str, Any]) -> str:
     return rtnval
 
 
+def _bind_cancel_check(*, executor_aspects: Any, run_id: str) -> Any:
+    """
+        Returns executor aspects whose subprocess runner stops the job when
+        an operator cancel for ``run_id`` reaches the pod (via the
+        heartbeat and :data:`CANCEL_REGISTRY`). Aspects carrying an injected
+        runner (tests) are returned unchanged.
+
+        :param executor_aspects: Test, build or provision executor aspects.
+        :param run_id: The run the job belongs to.
+
+        :returns: The aspects to execute with.
+    """
+    rtnval = executor_aspects
+    if executor_aspects.run_func is subprocess.run:
+        cancellable = make_cancellable_run(
+            cancel_check=lambda: CANCEL_REGISTRY.is_cancelled(run_id))
+        rtnval = executor_aspects.with_run_func(cancellable)
+    return rtnval
+
+
 def _handle_test_job(*, client: PychestrateMtlsClient, state: ClientState,
                       envelope: Dict[str, Any], run_id: str, client_id: str,
                       local_run_id: str,
@@ -547,9 +569,11 @@ def _handle_test_job(*, client: PychestrateMtlsClient, state: ClientState,
         state=state,
         envelope=envelope,
         local_run_id=local_run_id,
-        aspects=aspects.executor_aspects,
+        aspects=_bind_cancel_check(
+            executor_aspects=aspects.executor_aspects, run_id=run_id),
         progress_reporter=progress_reporter,
     )
+    CANCEL_REGISTRY.clear(run_id)
 
     upload_outcome = upload_run_results(
         client=client,
@@ -557,10 +581,13 @@ def _handle_test_job(*, client: PychestrateMtlsClient, state: ClientState,
         envelope=envelope,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
+        run_cancelled=outcome.cancelled,
         aspects=aspects.result_uploader_aspects,
     )
 
-    if outcome.succeeded:
+    if outcome.cancelled:
+        run_note = "testbase run CANCELLED ({})".format(outcome.detail)
+    elif outcome.succeeded:
         run_note = "testbase run succeeded (output={})".format(
             outcome.output_dir)
     else:
@@ -603,9 +630,11 @@ def _handle_build_job(*, client: PychestrateMtlsClient, state: ClientState,
         state=state,
         envelope=envelope,
         local_run_id=local_run_id,
-        aspects=aspects.build_executor_aspects,
+        aspects=_bind_cancel_check(
+            executor_aspects=aspects.build_executor_aspects, run_id=run_id),
         progress_reporter=progress_reporter,
     )
+    CANCEL_REGISTRY.clear(run_id)
 
     upload_outcome = upload_build_results(
         client=client,
@@ -613,10 +642,13 @@ def _handle_build_job(*, client: PychestrateMtlsClient, state: ClientState,
         envelope=envelope,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
+        run_cancelled=outcome.cancelled,
         aspects=aspects.result_uploader_aspects,
     )
 
-    if outcome.succeeded:
+    if outcome.cancelled:
+        run_note = "build run CANCELLED ({})".format(outcome.detail)
+    elif outcome.succeeded:
         run_note = "build run succeeded (output={})".format(
             outcome.output_dir)
     else:
@@ -659,9 +691,11 @@ def _handle_provision_job(*, client: PychestrateMtlsClient,
         state=state,
         envelope=envelope,
         local_run_id=local_run_id,
-        aspects=aspects.provision_executor_aspects,
+        aspects=_bind_cancel_check(
+            executor_aspects=aspects.provision_executor_aspects, run_id=run_id),
         progress_reporter=progress_reporter,
     )
+    CANCEL_REGISTRY.clear(run_id)
 
     upload_outcome = upload_provision_results(
         client=client,
@@ -669,10 +703,13 @@ def _handle_provision_job(*, client: PychestrateMtlsClient,
         envelope=envelope,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
+        run_cancelled=outcome.cancelled,
         aspects=aspects.result_uploader_aspects,
     )
 
-    if outcome.succeeded:
+    if outcome.cancelled:
+        run_note = "provision run CANCELLED ({})".format(outcome.detail)
+    elif outcome.succeeded:
         run_note = "provision run succeeded (driver={} action={})".format(
             outcome.driver_name, outcome.action)
     else:

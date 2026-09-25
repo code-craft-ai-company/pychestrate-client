@@ -51,12 +51,14 @@ __credits__ = []
 from typing import Any, Callable, Dict, List, Optional
 
 import json
+import copy
 import logging
 import os
 import subprocess
 
 from ccai.errors.exceptions import BadParameterError
 
+from ccai.pychestrate.client.cancellable_run import RunCancelled
 from ccai.pychestrate.client.state import ClientState
 
 
@@ -92,6 +94,9 @@ PROVISION_ACTIONS = (
 #: Local provision-run-record status codes.
 PROVISION_STATUS_SUCCEEDED = "succeeded"
 PROVISION_STATUS_FAILED = "failed"
+#: The job was stopped by an operator cancel (reported as the ``cancelled``
+#: terminal outcome).
+PROVISION_STATUS_CANCELLED = "cancelled"
 
 #: Sub-directory (under the client state directory) holding per-provision
 #: local execution records. Mirrors the build executor's ``builds``
@@ -156,6 +161,20 @@ class ProvisionExecutorAspects:
     def run_func(self) -> Callable[..., Any]:
         return self._run_func
 
+    def with_run_func(self, run_func: Callable[..., Any]) -> "ProvisionExecutorAspects":
+        """
+            Returns a copy of these aspects that runs subprocesses through
+            ``run_func`` (the dispatch consumer binds a per-run
+            cancellable runner this way).
+
+            :param run_func: The subprocess runner to use.
+
+            :returns: A new :class:`ProvisionExecutorAspects`.
+        """
+        rtnval = copy.copy(self)
+        rtnval._run_func = run_func
+        return rtnval
+
 
 DEFAULT_PROVISION_EXECUTOR_ASPECTS = ProvisionExecutorAspects()
 
@@ -211,6 +230,16 @@ class ProvisionRunOutcome:
                       ``PROVISION_STATUS_SUCCEEDED``.
         """
         rtnval = self._status == PROVISION_STATUS_SUCCEEDED
+        return rtnval
+
+    @property
+    def cancelled(self) -> bool:
+        """
+            Gets whether an operator cancel stopped the provision run.
+
+            :returns: True when ``status`` is ``PROVISION_STATUS_CANCELLED``.
+        """
+        rtnval = self._status == PROVISION_STATUS_CANCELLED
         return rtnval
 
     @property
@@ -816,6 +845,11 @@ def execute_provision_envelope(*, state: ClientState,
         else:
             status = PROVISION_STATUS_FAILED
             detail = "provision run exited with code {}.".format(exit_code)
+    except RunCancelled as cancelled_err:
+        status = PROVISION_STATUS_CANCELLED
+        exit_code = cancelled_err.returncode
+        detail = str(cancelled_err)
+        logger.info("pychestrate-client: %s", detail)
     except FileNotFoundError as notfounderr:
         detail = (
             "The infra-tool binary ({}) could not be found on this pod: "

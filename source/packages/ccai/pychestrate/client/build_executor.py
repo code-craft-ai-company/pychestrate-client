@@ -60,12 +60,14 @@ __credits__ = []
 from typing import Any, Callable, Dict, List, Optional
 
 import json
+import copy
 import logging
 import os
 import subprocess
 
 from ccai.errors.exceptions import BadParameterError
 
+from ccai.pychestrate.client.cancellable_run import RunCancelled
 from ccai.pychestrate.client.state import ClientState
 
 
@@ -95,6 +97,9 @@ SOURCE_KIND_GIT = "git"
 #: Local build-run-record status codes.
 BUILD_STATUS_SUCCEEDED = "succeeded"
 BUILD_STATUS_FAILED = "failed"
+#: The job was stopped by an operator cancel (reported as the ``cancelled``
+#: terminal outcome).
+BUILD_STATUS_CANCELLED = "cancelled"
 
 #: Sub-directory (under the client state directory) holding per-build
 #: local execution records. Mirrors testbase's ``runs`` directory.
@@ -178,6 +183,20 @@ class BuildExecutorAspects:
     def run_func(self) -> Callable[..., Any]:
         return self._run_func
 
+    def with_run_func(self, run_func: Callable[..., Any]) -> "BuildExecutorAspects":
+        """
+            Returns a copy of these aspects that runs subprocesses through
+            ``run_func`` (the dispatch consumer binds a per-run
+            cancellable runner this way).
+
+            :param run_func: The subprocess runner to use.
+
+            :returns: A new :class:`BuildExecutorAspects`.
+        """
+        rtnval = copy.copy(self)
+        rtnval._run_func = run_func
+        return rtnval
+
 
 DEFAULT_BUILD_EXECUTOR_ASPECTS = BuildExecutorAspects()
 
@@ -227,6 +246,16 @@ class BuildRunOutcome:
             :returns: True when ``status`` is ``BUILD_STATUS_SUCCEEDED``.
         """
         rtnval = self._status == BUILD_STATUS_SUCCEEDED
+        return rtnval
+
+    @property
+    def cancelled(self) -> bool:
+        """
+            Gets whether an operator cancel stopped the build.
+
+            :returns: True when ``status`` is ``BUILD_STATUS_CANCELLED``.
+        """
+        rtnval = self._status == BUILD_STATUS_CANCELLED
         return rtnval
 
     @property
@@ -685,6 +714,8 @@ def _acquire_git_source(*, git_url: str, git_ref: Optional[Any],
         rtnval = SourceAcquisitionResult(
             acquired=False, source_dir=source_dir, detail=detail)
         return rtnval
+    except RunCancelled:
+        raise
     except Exception as cloneerr:
         detail = "The git clone raised an unexpected error: {}".format(
             cloneerr)
@@ -726,6 +757,8 @@ def _acquire_git_source(*, git_url: str, git_ref: Optional[Any],
             timeout=aspects.clone_timeout_seconds,
             capture_output=True,
         )
+    except RunCancelled:
+        raise
     except Exception as checkouterr:
         detail = "git checkout of ref {} raised an error: {}".format(
             git_ref, checkouterr)
@@ -926,14 +959,25 @@ def execute_build_envelope(*, state: ClientState, envelope: Dict[str, Any],
             command=[], source_dir=work_dir)
         return rtnval
 
-    acquisition = acquire_source(
-        envelope=envelope, build_spec=build_spec, source_dir=work_dir,
-        aspects=aspects)
-    if not acquisition.acquired:
-        detail = "Build source acquisition failed: {}".format(
-            acquisition.detail)
-        rtnval = _fail(detail=detail, command=command, source_dir=work_dir)
-        return rtnval
+    try:
+        acquisition = acquire_source(
+            envelope=envelope, build_spec=build_spec, source_dir=work_dir,
+            aspects=aspects)
+        if not acquisition.acquired:
+            detail = "Build source acquisition failed: {}".format(
+                acquisition.detail)
+            rtnval = _fail(detail=detail, command=command, source_dir=work_dir)
+            return rtnval
+    except RunCancelled as cancelled_err:
+        logger.info("pychestrate-client: %s", cancelled_err)
+        cancelled = BuildRunOutcome(
+            status=BUILD_STATUS_CANCELLED, exit_code=cancelled_err.returncode,
+            output_dir=output_dir, source_dir=work_dir, command=command,
+            runner_kind=runner_kind, detail=str(cancelled_err))
+        write_local_build_record(
+            state=state, run_id=run_id, local_run_id=local_run_id,
+            envelope_id=envelope_id, outcome=cancelled)
+        return cancelled
 
     source_dir = acquisition.source_dir
 
@@ -975,6 +1019,11 @@ def execute_build_envelope(*, state: ClientState, envelope: Dict[str, Any],
         else:
             status = BUILD_STATUS_FAILED
             detail = "makefile build exited with code {}.".format(exit_code)
+    except RunCancelled as cancelled_err:
+        status = BUILD_STATUS_CANCELLED
+        exit_code = cancelled_err.returncode
+        detail = str(cancelled_err)
+        logger.info("pychestrate-client: %s", detail)
     except FileNotFoundError as notfounderr:
         detail = (
             "The 'make' binary ({}) could not be found on this pod: "

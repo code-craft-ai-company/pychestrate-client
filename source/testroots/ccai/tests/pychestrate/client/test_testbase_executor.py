@@ -12,7 +12,9 @@ from ccai import testbase
 from ccai.errors.exceptions import BadParameterError
 
 from ccai.pychestrate.client.state import ClientState
+from ccai.pychestrate.client.cancellable_run import RunCancelled
 from ccai.pychestrate.client.testbase_executor import (
+    RUN_STATUS_CANCELLED,
     RUN_STATUS_FAILED,
     RUN_STATUS_SUCCEEDED,
     TestbaseExecutorAspects,
@@ -203,4 +205,27 @@ def test_execute_job_envelope_survives_unbuildable_envelope():
         testbase.assert_false(outcome.succeeded)
         testbase.assert_equal(outcome.status, RUN_STATUS_FAILED)
         testbase.assert_equal(len(recorder.calls), 0)
+    return
+
+
+def test_execute_job_envelope_records_a_cancelled_run():
+    """
+    **Feature: cancel (E2E-09)**
+    **Property: a run the cancellable runner stopped is recorded as
+    cancelled, not failed.**
+    """
+    def _cancelled_runner(command, **kwargs):
+        raise RunCancelled("The run was cancelled by an operator; the job was stopped.",
+                           returncode=-15)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        outcome = execute_job_envelope(
+            state=state, envelope=_sample_envelope(), local_run_id="local-c",
+            aspects=TestbaseExecutorAspects(run_func=_cancelled_runner))
+
+    testbase.assert_equal(outcome.status, RUN_STATUS_CANCELLED)
+    testbase.assert_true(outcome.cancelled)
+    testbase.assert_false(outcome.succeeded)
     return

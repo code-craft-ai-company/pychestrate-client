@@ -32,12 +32,14 @@ __credits__ = []
 from typing import Any, Callable, Dict, List, Optional
 
 import json
+import copy
 import logging
 import os
 import subprocess
 
 from ccai.errors.exceptions import BadParameterError
 
+from ccai.pychestrate.client.cancellable_run import RunCancelled
 from ccai.pychestrate.client.state import ClientState
 
 
@@ -57,6 +59,9 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 14400.0
 #: Local run-record status codes.
 RUN_STATUS_SUCCEEDED = "succeeded"
 RUN_STATUS_FAILED = "failed"
+#: The job was stopped by an operator cancel (reported as the ``cancelled``
+#: terminal outcome).
+RUN_STATUS_CANCELLED = "cancelled"
 
 
 class TestbaseExecutorAspects:
@@ -112,6 +117,20 @@ class TestbaseExecutorAspects:
     def run_func(self) -> Callable[..., Any]:
         return self._run_func
 
+    def with_run_func(self, run_func: Callable[..., Any]) -> "TestbaseExecutorAspects":
+        """
+            Returns a copy of these aspects that runs subprocesses through
+            ``run_func`` (the dispatch consumer binds a per-run
+            cancellable runner this way).
+
+            :param run_func: The subprocess runner to use.
+
+            :returns: A new :class:`TestbaseExecutorAspects`.
+        """
+        rtnval = copy.copy(self)
+        rtnval._run_func = run_func
+        return rtnval
+
 
 DEFAULT_TESTBASE_EXECUTOR_ASPECTS = TestbaseExecutorAspects()
 
@@ -154,6 +173,16 @@ class TestbaseRunOutcome:
             :returns: True when ``status`` is ``RUN_STATUS_SUCCEEDED``.
         """
         rtnval = self._status == RUN_STATUS_SUCCEEDED
+        return rtnval
+
+    @property
+    def cancelled(self) -> bool:
+        """
+            Gets whether an operator cancel stopped the run.
+
+            :returns: True when ``status`` is ``RUN_STATUS_CANCELLED``.
+        """
+        rtnval = self._status == RUN_STATUS_CANCELLED
         return rtnval
 
     @property
@@ -497,6 +526,11 @@ def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
         else:
             status = RUN_STATUS_FAILED
             detail = "testbase run exited with code {}.".format(exit_code)
+    except RunCancelled as cancelled_err:
+        status = RUN_STATUS_CANCELLED
+        exit_code = cancelled_err.returncode
+        detail = str(cancelled_err)
+        logger.info("pychestrate-client: %s", detail)
     except FileNotFoundError as notfounderr:
         detail = (
             "The 'testbase' binary ({}) could not be found on this pod: "

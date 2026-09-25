@@ -229,7 +229,7 @@ def _install_fakes(routing):
         return rtnval
 
     def _fake_test_upload(*, client, state, envelope, result_dir,
-                          run_succeeded, aspects):
+                          run_succeeded, aspects, run_cancelled=False):
         routing.test_uploads += 1
         rtnval = ResultUploadOutcome(
             status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,
@@ -237,7 +237,7 @@ def _install_fakes(routing):
         return rtnval
 
     def _fake_build_upload(*, client, state, envelope, result_dir,
-                           run_succeeded, aspects):
+                           run_succeeded, aspects, run_cancelled=False):
         routing.build_uploads += 1
         rtnval = ResultUploadOutcome(
             status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,
@@ -245,7 +245,7 @@ def _install_fakes(routing):
         return rtnval
 
     def _fake_provision_upload(*, client, state, envelope, result_dir,
-                               run_succeeded, aspects):
+                               run_succeeded, aspects, run_cancelled=False):
         routing.provision_uploads += 1
         rtnval = ResultUploadOutcome(
             status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,

@@ -110,6 +110,9 @@ TESTBASE_HTML_SUMMARY_FILENAME = "testsummary.html"
 #: ``TerminalOutcome`` enum values from the OpenAPI spec.
 TERMINAL_OUTCOME_SUCCESS = "success"
 TERMINAL_OUTCOME_FAILURE = "failure"
+#: Terminal outcome for a run an operator cancel stopped; the service keeps
+#: it out of FAILED.
+TERMINAL_OUTCOME_CANCELLED = "cancelled"
 
 #: Local run-record upload-status markers.
 UPLOAD_STATUS_COMPLETE = "upload_complete"
@@ -933,6 +936,7 @@ def run_needs_upload_retry(state: ClientState, run_id: str) -> bool:
 def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
                         envelope: Dict[str, Any], result_dir: str,
                         run_succeeded: bool,
+                        run_cancelled: bool = False,
                         aspects: ResultUploaderAspects =
                         DEFAULT_RESULT_UPLOADER_ASPECTS
                         ) -> ResultUploadOutcome:
@@ -954,6 +958,8 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
                          ``JobResultsLocator``).
         :param result_dir: The absolute path of the testbase result-tree
                            root directory.
+        :param run_cancelled: True when an operator cancel stopped the job
+                              (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the testbase run itself succeeded
                               (drives the manifest ``terminal_outcome``).
         :param aspects: Behavior-shaping aspects.
@@ -967,7 +973,9 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
     backend_key_prefix = locator["backend_key_prefix"]
     backend_driver = locator["backend_driver"]
 
-    if run_succeeded:
+    if run_cancelled:
+        terminal_outcome = TERMINAL_OUTCOME_CANCELLED
+    elif run_succeeded:
         terminal_outcome = TERMINAL_OUTCOME_SUCCESS
     else:
         terminal_outcome = TERMINAL_OUTCOME_FAILURE
@@ -1134,6 +1142,7 @@ def mark_build_upload_status(state: ClientState, run_id: str,
 def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
                           envelope: Dict[str, Any], result_dir: str,
                           run_succeeded: bool,
+                        run_cancelled: bool = False,
                           aspects: ResultUploaderAspects =
                           DEFAULT_RESULT_UPLOADER_ASPECTS
                           ) -> ResultUploadOutcome:
@@ -1161,6 +1170,8 @@ def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
         :param envelope: The verified ``job_kind=build`` envelope dict
                          (source of the ``JobResultsLocator``).
         :param result_dir: The absolute path of the build output directory.
+        :param run_cancelled: True when an operator cancel stopped the job
+                              (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the build itself succeeded (drives
                               the manifest ``terminal_outcome``).
         :param aspects: Behavior-shaping aspects.
@@ -1174,7 +1185,9 @@ def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
     backend_key_prefix = locator["backend_key_prefix"]
     backend_driver = locator["backend_driver"]
 
-    if run_succeeded:
+    if run_cancelled:
+        terminal_outcome = TERMINAL_OUTCOME_CANCELLED
+    elif run_succeeded:
         terminal_outcome = TERMINAL_OUTCOME_SUCCESS
     else:
         terminal_outcome = TERMINAL_OUTCOME_FAILURE
@@ -1344,6 +1357,7 @@ def mark_provision_upload_status(state: ClientState, run_id: str,
 def upload_provision_results(*, client: PychestrateMtlsClient,
                               state: ClientState, envelope: Dict[str, Any],
                               result_dir: str, run_succeeded: bool,
+                        run_cancelled: bool = False,
                               aspects: ResultUploaderAspects =
                               DEFAULT_RESULT_UPLOADER_ASPECTS
                               ) -> ResultUploadOutcome:
@@ -1372,6 +1386,8 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
                          (source of the ``JobResultsLocator``).
         :param result_dir: The absolute path of the provision output
                            directory.
+        :param run_cancelled: True when an operator cancel stopped the job
+                              (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the provision run itself succeeded
                               (drives the manifest ``terminal_outcome``).
         :param aspects: Behavior-shaping aspects.
@@ -1385,7 +1401,9 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
     backend_key_prefix = locator["backend_key_prefix"]
     backend_driver = locator["backend_driver"]
 
-    if run_succeeded:
+    if run_cancelled:
+        terminal_outcome = TERMINAL_OUTCOME_CANCELLED
+    elif run_succeeded:
         terminal_outcome = TERMINAL_OUTCOME_SUCCESS
     else:
         terminal_outcome = TERMINAL_OUTCOME_FAILURE
