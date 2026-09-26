@@ -582,6 +582,7 @@ def _handle_test_job(*, client: PychestrateMtlsClient, state: ClientState,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
         run_cancelled=outcome.cancelled,
+        run_notes=None if outcome.succeeded else outcome.detail,
         aspects=aspects.result_uploader_aspects,
     )
 
@@ -643,6 +644,7 @@ def _handle_build_job(*, client: PychestrateMtlsClient, state: ClientState,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
         run_cancelled=outcome.cancelled,
+        run_notes=None if outcome.succeeded else outcome.detail,
         aspects=aspects.result_uploader_aspects,
     )
 
@@ -704,6 +706,7 @@ def _handle_provision_job(*, client: PychestrateMtlsClient,
         result_dir=outcome.output_dir,
         run_succeeded=outcome.succeeded,
         run_cancelled=outcome.cancelled,
+        run_notes=None if outcome.succeeded else outcome.detail,
         aspects=aspects.result_uploader_aspects,
     )
 

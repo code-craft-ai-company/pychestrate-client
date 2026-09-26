@@ -494,3 +494,25 @@ def test_upload_run_results_reports_a_cancelled_run_as_cancelled():
         _, manifest = client.results.manifests[0]
         testbase.assert_equal(manifest.terminal_outcome, "cancelled")
     return
+
+
+def test_upload_run_results_sends_the_failure_detail_as_manifest_notes():
+    """
+    **Feature: pod failure reasons (E2E-15)**
+    **Property: a failed run's detail travels as the manifest's notes, so
+    the service can show why it failed.**
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = _make_state(os.path.join(tmpdir, "state"))
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        client = _FakeRestClient()
+        aspects = ResultUploaderAspects(store_driver=_RecordingStoreDriver())
+
+        upload_run_results(
+            client=client, state=state, envelope=_sample_envelope(),
+            result_dir=result_dir, run_succeeded=False,
+            run_notes="testbase run exited with code 2.", aspects=aspects)
+
+        _, manifest = client.results.manifests[0]
+        testbase.assert_equal(manifest.notes, "testbase run exited with code 2.")
+    return

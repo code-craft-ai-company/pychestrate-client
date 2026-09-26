@@ -937,6 +937,7 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
                         envelope: Dict[str, Any], result_dir: str,
                         run_succeeded: bool,
                         run_cancelled: bool = False,
+                        run_notes: Optional[str] = None,
                         aspects: ResultUploaderAspects =
                         DEFAULT_RESULT_UPLOADER_ASPECTS
                         ) -> ResultUploadOutcome:
@@ -958,6 +959,8 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
                          ``JobResultsLocator``).
         :param result_dir: The absolute path of the testbase result-tree
                            root directory.
+        :param run_notes: Why the job failed or was stopped, sent as the
+                          manifest's ``notes`` so the run detail can say.
         :param run_cancelled: True when an operator cancel stopped the job
                               (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the testbase run itself succeeded
@@ -992,10 +995,11 @@ def upload_run_results(*, client: PychestrateMtlsClient, state: ClientState,
         backend_key_prefix=backend_key_prefix,
         store_driver=store_driver)
 
-    notes = None
+    notes = run_notes if run_notes else None
     if not tree_uploaded:
-        notes = ("Result-tree byte transfer incomplete; manifest posted for "
+        upload_note = ("Result-tree byte transfer incomplete; manifest posted for "
                  "reconciliation. See client-side run record.")
+        notes = upload_note if notes is None else "{} {}".format(notes, upload_note)
 
     manifest = build_result_manifest(
         run_id=run_id, client_id=client_id, terminal_outcome=terminal_outcome,
@@ -1143,6 +1147,7 @@ def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
                           envelope: Dict[str, Any], result_dir: str,
                           run_succeeded: bool,
                         run_cancelled: bool = False,
+                        run_notes: Optional[str] = None,
                           aspects: ResultUploaderAspects =
                           DEFAULT_RESULT_UPLOADER_ASPECTS
                           ) -> ResultUploadOutcome:
@@ -1170,6 +1175,8 @@ def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
         :param envelope: The verified ``job_kind=build`` envelope dict
                          (source of the ``JobResultsLocator``).
         :param result_dir: The absolute path of the build output directory.
+        :param run_notes: Why the job failed or was stopped, sent as the
+                          manifest's ``notes`` so the run detail can say.
         :param run_cancelled: True when an operator cancel stopped the job
                               (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the build itself succeeded (drives
@@ -1203,10 +1210,11 @@ def upload_build_results(*, client: PychestrateMtlsClient, state: ClientState,
         backend_key_prefix=backend_key_prefix,
         store_driver=store_driver)
 
-    notes = None
+    notes = run_notes if run_notes else None
     if not tree_uploaded:
-        notes = ("Build artifact-tree byte transfer incomplete; manifest "
+        upload_note = ("Build artifact-tree byte transfer incomplete; manifest "
                  "posted for reconciliation. See client-side build record.")
+        notes = upload_note if notes is None else "{} {}".format(notes, upload_note)
 
     manifest = build_build_result_manifest(
         run_id=run_id, client_id=client_id, terminal_outcome=terminal_outcome,
@@ -1358,6 +1366,7 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
                               state: ClientState, envelope: Dict[str, Any],
                               result_dir: str, run_succeeded: bool,
                         run_cancelled: bool = False,
+                        run_notes: Optional[str] = None,
                               aspects: ResultUploaderAspects =
                               DEFAULT_RESULT_UPLOADER_ASPECTS
                               ) -> ResultUploadOutcome:
@@ -1386,6 +1395,8 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
                          (source of the ``JobResultsLocator``).
         :param result_dir: The absolute path of the provision output
                            directory.
+        :param run_notes: Why the job failed or was stopped, sent as the
+                          manifest's ``notes`` so the run detail can say.
         :param run_cancelled: True when an operator cancel stopped the job
                               (manifest outcome ``cancelled``).
         :param run_succeeded: Whether the provision run itself succeeded
@@ -1419,11 +1430,12 @@ def upload_provision_results(*, client: PychestrateMtlsClient,
         backend_key_prefix=backend_key_prefix,
         store_driver=store_driver)
 
-    notes = None
+    notes = run_notes if run_notes else None
     if not tree_uploaded:
-        notes = ("Provision output-tree byte transfer incomplete; manifest "
+        upload_note = ("Provision output-tree byte transfer incomplete; manifest "
                  "posted for reconciliation. See client-side provision "
                  "record.")
+        notes = upload_note if notes is None else "{} {}".format(notes, upload_note)
 
     manifest = build_provision_result_manifest(
         run_id=run_id, client_id=client_id, terminal_outcome=terminal_outcome,
