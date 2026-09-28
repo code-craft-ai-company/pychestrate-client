@@ -25,14 +25,33 @@ Highlights
 - Built on top of the codegen'd ``ccai.pychestrate.rest.client``
   package, so the runtime never hand-rolls HTTP against the service.
 
-Milestone Scope
-===============
+What it does
+============
 
-- **M1** - enrollment + heartbeat.
-- **M2 (this release)** - long-poll dispatch consumption, signed-envelope
-  verification, and testbase invocation. The ``run`` subcommand drives the
-  heartbeat loop and the dispatch-consumer loop concurrently.
-- **M3 (planned)** - progress + result push.
+The ``run`` subcommand is the normal pod mode. It sends a heartbeat and
+long-polls the service for dispatched jobs at the same time. For each job
+it verifies the envelope's signature, then branches on the job kind:
+
+- **test** - runs ``codecraftai-testbase``.
+- **build** - acquires the source, runs the makefile, and uploads artifacts.
+- **provision** - runs the provisioning runner.
+- **rpa** - runs a process or taskplus job.
+
+Every job streams live progress to the service and pushes its result files
+and a completion manifest, including why a job failed or was stopped. A
+cancel from the service reaches the running job on the next heartbeat.
+
+The other subcommands are ``enroll`` (redeem a token), ``heartbeat`` (the
+heartbeat loop alone), ``install-signing-key`` (pin one envelope signing
+key, see below), and ``version``.
+
+Set up a pod
+============
+
+`userguide/01-00-quickstart.rst <userguide/01-00-quickstart.rst>`_ is the
+one guide for bringing a machine into service: install, enroll, run, run as
+a systemd service, upgrade, and what the failures mean. The token page in the
+Pychestrate admin UI follows it.
 
 Envelope signing keys
 =====================
@@ -134,21 +153,20 @@ For local development:
 Quick Start
 ===========
 
-Get an enrollment token from the Pychestrate admin UI, then:
+Mint a token under **Admin**, **Enrollment Tokens** in the Pychestrate web UI.
+The pod name you give it is the ``--name`` below. Then, on the pod:
 
 .. code-block:: bash
 
    pychestrate-client enroll --service-url https://pychestrate.example.com \
-       --token <bootstrap-token> --name my-client
+       --token <secret> --name <pod name>
+   pychestrate-client run
 
-After enrollment, start the heartbeat loop:
-
-.. code-block:: bash
-
-   pychestrate-client heartbeat
-
-Runtime state is persisted under ``~/.pychestrate-client/`` by default
-(override with ``--state-dir``).
+Runtime state is kept under ``~/.pychestrate-client/`` by default; the
+guide above puts it in ``/var/lib/pychestrate-client`` with
+``--state-dir``, which goes before the subcommand. ``pychestrate-client`` is
+only on your ``PATH`` if you put the installing environment's ``bin``
+directory there.
 
 Running Tests
 =============
@@ -181,4 +199,4 @@ Related Packages
 
 - ``pychestrate-service`` - the central service this client enrolls with.
 - ``codecraftai-restclient-pychestrate`` - codegen'd REST wrapper consumed here.
-- ``codecraftai-testbase`` - the test framework invoked for dispatched jobs (M2).
+- ``codecraftai-testbase`` - the test framework invoked for dispatched test jobs.

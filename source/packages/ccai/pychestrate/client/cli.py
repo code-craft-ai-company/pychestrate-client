@@ -406,7 +406,7 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[List[str]] = None) -> int:
     """
         Top-level CLI entry point used by the ``pychestrate-client`` console
-        script and by ``python -m ccai.pychestrate.client``.
+        script.
 
         :param argv: Optional argument vector. Defaults to ``sys.argv[1:]``.
 
