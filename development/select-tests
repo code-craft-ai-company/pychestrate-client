@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+"""
+usage: development/select-tests [--select SEL]... [--exclude SEL]... [--root DIR]
+                                [--suite PKG] [--base PKG]...
+
+Print the 'testbase testing run' --includes arguments (one per line) that run
+exactly the requested single-host test modules. 'make test' uses it.
+
+It exists because testbase has two traps:
+
+  1. An include is a string prefix: --includes=...webservice.phase1 also runs
+     every module under phase10 ... phase19.
+  2. --excludes does nothing: testbase compares absolute file paths with a
+     prefix derived from the dotted name, which never matches, so every
+     "excluded" test still runs.
+
+Selectors are dotted names, absolute (ccai.tests.singlehost...) or relative to
+ccai.tests.singlehost.pychestrate.webservice (then .pychestrate, then
+.singlehost):
+
+  * a selector naming a package selects exactly that package, recursively
+    ("phase1" never includes phase10);
+  * otherwise its last part is a module-name prefix inside the parent package
+    ("phase10.test_p26" selects test_p26a_..., test_p26b_...).
+
+--exclude takes the same selectors and is applied here, by listing every
+remaining module explicitly. With no --select and no --exclude the whole suite
+is one safe include: --includes=ccai.tests.singlehost
+
+--suite and --base let another repository's test tree use the same rules
+(for example the core repository: --suite ccai.tests --base
+ccai.tests.pychestrate --base ccai.tests).
+
+exit status: 0, or 2 when a selector matches nothing.
+"""
+
+import argparse
+import os
+import sys
+
+from typing import List, Optional, Set
+
+
+SUITE_PACKAGE = "ccai.tests.singlehost"
+RELATIVE_BASES = (
+    "ccai.tests.singlehost.pychestrate.webservice",
+    "ccai.tests.singlehost.pychestrate",
+    "ccai.tests.singlehost",
+)
+
+
+def _testroots_dir(root: str) -> str:
+    """The directory that holds the top-level 'ccai' test package."""
+    return os.path.dirname(os.path.abspath(root))
+
+
+def _package_dir(testroots: str, dotted: str) -> str:
+    return os.path.join(testroots, *dotted.split("."))
+
+
+def _modules_under(directory: str, testroots: str) -> List[str]:
+    """Every test module (test_*.py) under a directory, as dotted names."""
+    modules = []
+    for dirpath, dirnames, filenames in os.walk(directory):
+        dirnames[:] = sorted(name for name in dirnames if not name.startswith((".", "_")))
+        for filename in sorted(filenames):
+            if filename.startswith("test_") and filename.endswith(".py"):
+                full = os.path.join(dirpath, filename)
+                relative = os.path.relpath(full, testroots)[:-len(".py")]
+                modules.append(relative.replace(os.sep, "."))
+    return modules
+
+
+def resolve_selector(selector: str, testroots: str, bases: tuple = RELATIVE_BASES) -> Optional[List[str]]:
+    """
+        The test modules a selector names, or None when it names nothing.
+    """
+    candidates = [selector] if selector.startswith("ccai.") else [
+        "{}.{}".format(base, selector) for base in bases
+    ]
+    for dotted in candidates:
+        directory = _package_dir(testroots, dotted)
+        if os.path.isdir(directory):
+            return _modules_under(directory, testroots)
+        parent, _, prefix = dotted.rpartition(".")
+        parent_dir = _package_dir(testroots, parent)
+        if parent and os.path.isdir(parent_dir):
+            matched = [
+                "{}.{}".format(parent, name[:-len(".py")])
+                for name in sorted(os.listdir(parent_dir))
+                if name.startswith("test_") and name.endswith(".py") and name.startswith(prefix)
+            ]
+            if matched:
+                return matched
+    return None
+
+
+def main(argv: List[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="development/select-tests",
+        usage="%(prog)s [--select SEL]... [--exclude SEL]... [--root DIR] [--suite PKG] [--base PKG]...",
+        add_help=True,
+        description=__doc__.split("\n\n", 1)[1] if "\n\n" in __doc__ else None,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--select", action="append", default=[], metavar="SEL")
+    parser.add_argument("--exclude", action="append", default=[], metavar="SEL")
+    default_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "source", "testroots", "ccai")
+    parser.add_argument("--root", default=default_root, help="the testbase --root (default: %(default)s)")
+    parser.add_argument("--suite", default=SUITE_PACKAGE, metavar="PKG",
+                        help="the whole suite, run when nothing is selected (default: %(default)s)")
+    parser.add_argument("--base", action="append", default=None, metavar="PKG",
+                        help="package a relative selector is resolved against, in order (repeatable;"
+                             " default: the service's)")
+    args = parser.parse_args(argv)
+
+    testroots = _testroots_dir(args.root)
+    suite = args.suite
+    bases = tuple(args.base) if args.base else RELATIVE_BASES
+
+    if not args.select and not args.exclude:
+        print("--includes={}".format(suite))
+        return 0
+
+    selected: List[str] = []
+    if args.select:
+        for selector in args.select:
+            modules = resolve_selector(selector, testroots, bases)
+            if modules is None:
+                print("select-tests: '{}' matches no test package or module".format(selector), file=sys.stderr)
+                return 2
+            selected.extend(modules)
+    else:
+        selected = _modules_under(_package_dir(testroots, suite), testroots)
+
+    excluded: Set[str] = set()
+    for selector in args.exclude:
+        modules = resolve_selector(selector, testroots, bases)
+        if modules is None:
+            print("select-tests: exclude '{}' matches no test package or module".format(selector), file=sys.stderr)
+            return 2
+        excluded.update(modules)
+
+    seen: Set[str] = set()
+    remaining = []
+    for module in selected:
+        if module in excluded or module in seen:
+            continue
+        seen.add(module)
+        remaining.append(module)
+    if not remaining:
+        print("select-tests: the selection is empty after exclusions", file=sys.stderr)
+        return 2
+
+    # testbase matches even a full module name as a prefix: selecting
+    # phase2.test_client_enrollment also runs test_client_enrollment_m2.
+    # Say so when that drags in a module the selection left out.
+    chosen = set(remaining)
+    for module in remaining:
+        parent, _, name = module.rpartition(".")
+        parent_dir = _package_dir(testroots, parent)
+        for sibling in sorted(os.listdir(parent_dir)):
+            sibling_name = sibling[:-len(".py")] if sibling.endswith(".py") else None
+            if sibling_name is None or sibling_name == name or not sibling_name.startswith(name):
+                continue
+            sibling_module = "{}.{}".format(parent, sibling_name)
+            if sibling_module not in chosen:
+                print(
+                    "select-tests: note: testbase also runs {} (its name starts with {})".format(
+                        sibling_module, name
+                    ),
+                    file=sys.stderr,
+                )
+
+    for module in remaining:
+        print("--includes={}".format(module))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

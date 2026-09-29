@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""
+usage: development/lint [--no-syntax] [--traps FILE...]
+
+Cheap static checks for the repository; 'make lint' runs them.
+
+  syntax   Every Python file under source/, alembic/ and development/ must
+           parse (nothing is compiled or written).
+  traps    Every 'testbase testing run|query' command in the given files (by
+           default the CI workflows, the Makefile, AGENTS.md and the user
+           guide) must avoid testbase's two silent traps:
+             * an --includes naming a package whose name is a prefix of a
+               sibling package (phase1 also runs phase10 ... phase19);
+             * --excludes / -x, which testbase ignores.
+           'make test SELECT=... EXCLUDE=...' (development/select-tests)
+           selects modules without either trap.
+
+exit status: 0 when clean, 1 when a check fails, 2 on bad usage.
+"""
+
+import argparse
+import ast
+import glob
+import os
+import shlex
+import sys
+
+from typing import List, Tuple
+
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+TESTROOTS = os.path.join(REPO_ROOT, "source", "testroots")
+
+DEFAULT_TRAP_FILES = (
+    ".github/workflows/*.yml",
+    "Makefile",
+    "AGENTS.md",
+    "userguide/*.rst",
+)
+
+
+def _python_files() -> List[str]:
+    files: List[str] = []
+    for top in ("source", "alembic"):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(REPO_ROOT, top)):
+            dirnames[:] = [name for name in dirnames if name not in ("__pycache__", "node_modules") and not name.startswith(".")]
+            files.extend(os.path.join(dirpath, name) for name in filenames if name.endswith(".py"))
+    for path in sorted(glob.glob(os.path.join(REPO_ROOT, "development", "*"))):
+        if not os.path.isfile(path):
+            continue
+        if path.endswith(".py"):
+            files.append(path)
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                first = fh.readline()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if first.startswith("#!") and "python" in first:
+            files.append(path)
+    return files
+
+
+def check_syntax() -> List[str]:
+    """Parse every Python file; return one message per failure."""
+    problems: List[str] = []
+    for path in _python_files():
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                ast.parse(fh.read(), filename=path)
+        except SyntaxError as xcpt:
+            problems.append("{}:{}: syntax error: {}".format(
+                os.path.relpath(path, REPO_ROOT), xcpt.lineno, xcpt.msg
+            ))
+        except (OSError, UnicodeDecodeError) as xcpt:
+            problems.append("{}: unreadable: {}".format(os.path.relpath(path, REPO_ROOT), xcpt))
+    return problems
+
+
+def _testbase_commands(path: str) -> List[Tuple[int, List[str]]]:
+    """(line number, tokens) of every testbase run/query command in a file."""
+    commands: List[Tuple[int, List[str]]] = []
+    with open(path, "r", encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if stripped.startswith("#") or ("testbase testing run" not in line and "testbase testing query" not in line):
+            index += 1
+            continue
+        start = index + 1
+        text = stripped
+        while text.endswith("\\") and index + 1 < len(lines):
+            index += 1
+            text = text[:-1] + " " + lines[index].strip()
+        try:
+            tokens = shlex.split(text, comments=False)
+        except ValueError:
+            tokens = text.split()
+        commands.append((start, tokens))
+        index += 1
+    return commands
+
+
+def _prefix_siblings(dotted: str) -> List[str]:
+    """Sibling packages whose names start with the named package's name."""
+    parts = dotted.split(".")
+    directory = os.path.join(TESTROOTS, *parts)
+    if not os.path.isdir(directory):
+        return []
+    parent = os.path.dirname(directory)
+    name = os.path.basename(directory)
+    rtnval = sorted(
+        entry for entry in os.listdir(parent)
+        if entry != name and entry.startswith(name) and os.path.isdir(os.path.join(parent, entry))
+    )
+    return rtnval
+
+
+def check_traps(patterns: List[str]) -> List[str]:
+    """Report testbase commands that hit either trap."""
+    problems: List[str] = []
+    paths: List[str] = []
+    for pattern in patterns:
+        matched = sorted(glob.glob(os.path.join(REPO_ROOT, pattern)))
+        paths.extend(matched if matched else [])
+    for path in paths:
+        relative = os.path.relpath(path, REPO_ROOT)
+        for line_number, tokens in _testbase_commands(path):
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                value = None
+                if token.startswith("--includes="):
+                    value = token.split("=", 1)[1]
+                elif token in ("--includes", "-i") and index + 1 < len(tokens):
+                    value = tokens[index + 1]
+                if token.startswith("--excludes") or token == "-x":
+                    problems.append(
+                        "{}:{}: '{}' is ignored by testbase (every 'excluded' test still runs);"
+                        " use 'make test EXCLUDE=...' (development/select-tests)".format(
+                            relative, line_number, token
+                        )
+                    )
+                if value is not None:
+                    siblings = _prefix_siblings(value)
+                    if siblings:
+                        problems.append(
+                            "{}:{}: --includes={} also runs {} (testbase matches includes as"
+                            " prefixes); list its modules or use 'make test SELECT=...'".format(
+                                relative, line_number, value, ", ".join(siblings)
+                            )
+                        )
+                index += 1
+    return problems
+
+
+def main(argv: List[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="development/lint",
+        description=__doc__.split("\n\n", 1)[1],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--no-syntax", action="store_true", help="skip the Python syntax check")
+    parser.add_argument("--traps", nargs="*", default=None, metavar="FILE",
+                        help="files (globs) to scan for testbase traps; default: CI, Makefile, docs")
+    args = parser.parse_args(argv)
+
+    problems: List[str] = []
+    if args.no_syntax is False:
+        problems.extend(check_syntax())
+    trap_files = list(args.traps) if args.traps is not None else list(DEFAULT_TRAP_FILES)
+    problems.extend(check_traps(trap_files))
+
+    for problem in problems:
+        print(problem)
+    if problems:
+        print("lint: {} problem(s)".format(len(problems)), file=sys.stderr)
+        return 1
+    print("lint: ok")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

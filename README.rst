@@ -174,18 +174,32 @@ directory there.
 Running Tests
 =============
 
-Activate the virtual environment:
-
 .. code-block:: bash
 
-   source .venv/bin/activate
+   make test                                   # the whole client suite
+   make test SELECT="test_cli test_doctor"     # only those modules
+   make help                                   # every target
 
-Run TestBase tests:
+``make test`` runs ``testbase`` from ``.venv`` with the source tree on the
+path, prints the failures when a run fails, and keeps the output under
+``.output/``. ``make lint`` checks that every Python file parses and that
+no command in the Makefile, the workflows, AGENTS.md or the guides falls into the traps
+below.
 
-.. code-block:: bash
+Running ``testbase`` by hand has three silent traps, which is why the
+Makefile exists:
 
-   testbase testing run --root source/testroots/ccai \
-       --includes=ccai.tests.pychestrate.client --output=./.output
+- The environment installs the client with ``--no-root``, so the package is
+  not importable unless ``PYTHONPATH=source/packages:source/testroots`` is
+  set. Without it a test module that fails to import is *skipped* and the
+  run still reports ``PASSED``.
+- ``--includes`` is a string prefix, so ``--includes=...client.test_cli`` also
+  runs every module whose name starts with it.
+- ``--excludes`` does nothing: nothing is ever excluded.
+
+``development/select-tests`` turns ``SELECT`` and ``EXCLUDE`` into one exact
+include per module, so ``make test SELECT=... EXCLUDE=...`` avoids the last
+two.
 
 Standards and Conventions
 =========================
