@@ -12,7 +12,7 @@ __copyright__ = "Copyright 2025, Automation Mojo LLC"
 __credits__ = []
 
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import json
 import os
@@ -20,7 +20,49 @@ import os
 from ccai.errors.exceptions import ConfigurationError
 
 
-DEFAULT_STATE_DIR = os.path.expanduser("~/.pychestrate-client")
+APP_DIR_NAME = "pychestrate-client"
+
+#: The location earlier releases always used. It is still used when it exists
+#: and the XDG location does not, so a pod that is already enrolled keeps its
+#: identity without being moved.
+LEGACY_STATE_DIR = os.path.expanduser("~/.pychestrate-client")
+
+#: What ``--help`` says the default is (the real answer depends on the
+#: environment and on what is already on disk; see :func:`default_state_dir`).
+DEFAULT_STATE_DIR_HELP = "$XDG_DATA_HOME/pychestrate-client, normally ~/.local/share/pychestrate-client"
+
+
+def default_state_dir(environ: Optional[Mapping[str, str]] = None, home: Optional[str] = None) -> str:
+    """
+        The state directory used when ``--state-dir`` is not given.
+
+        New enrollments go under ``$XDG_DATA_HOME/pychestrate-client``
+        (``~/.local/share/pychestrate-client``), the per-user counterpart of
+        ``/var/lib/pychestrate-client`` that the service unit uses; per the
+        XDG specification an unset, empty or relative ``XDG_DATA_HOME`` falls
+        back to ``~/.local/share``. When that directory does not exist but
+        the old ``~/.pychestrate-client`` does, the old one is returned so an
+        enrolled pod is not silently treated as un-enrolled after an upgrade.
+
+        :param environ: Environment to read (tests pass their own).
+        :param home: Home directory (tests pass their own).
+
+        :returns: The absolute path.
+    """
+    if environ is None:
+        environ = os.environ
+    if home is None:
+        home = os.path.expanduser("~")
+
+    data_home = str(environ.get("XDG_DATA_HOME", "") or "")
+    if len(data_home) == 0 or not os.path.isabs(data_home):
+        data_home = os.path.join(home, ".local", "share")
+
+    current = os.path.join(data_home, APP_DIR_NAME)
+    legacy = os.path.join(home, ".pychestrate-client")
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
 
 FILENAME_CLIENT_ID = "client_id"
 FILENAME_CLIENT_KEY = "client.key"
@@ -55,7 +97,7 @@ class ClientState:
                 client.key      - PEM-encoded private key (mode 0600)
                 client.crt      - PEM-encoded signed client certificate (mode 0644)
                 service-ca.crt  - PEM-encoded CA chain used to verify the server
-                config.json     - service URL, client name, other settings
+                config.json     - service URL, pod label, other settings
 
                 envelope-signing-jwks.json
                                 - TTL-stamped cache of the RFC 7517 JWK Set
@@ -74,10 +116,10 @@ class ClientState:
             Initializes a :class:`ClientState` instance bound to a state directory.
 
             :param state_dir: Path to the state directory. Defaults to
-                              ``~/.pychestrate-client`` when ``None``.
+                              :func:`default_state_dir` when ``None``.
         """
         if state_dir is None:
-            state_dir = DEFAULT_STATE_DIR
+            state_dir = default_state_dir()
 
         self._state_dir = os.path.abspath(state_dir)
         return

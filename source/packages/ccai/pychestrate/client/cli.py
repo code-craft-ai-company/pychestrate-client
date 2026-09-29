@@ -65,7 +65,7 @@ from ccai.pychestrate.client.heartbeat import (
     send_one_heartbeat,
 )
 from ccai.pychestrate.client.shutdown import ShutdownController
-from ccai.pychestrate.client.state import ClientState
+from ccai.pychestrate.client.state import DEFAULT_STATE_DIR_HELP, ClientState
 
 
 #: How long ``run``'s main thread blocks in each join before checking
@@ -85,7 +85,7 @@ bringing a pod into service:
   1. In the service, choose Admin, Enrollment Tokens and mint a token for the
      pod (the label you give it there is the --name below).
   2. Save the token to a file, then on this machine:
-       pychestrate-client enroll --service-url https://SERVICE --name POD-LABEL --token-file token.txt
+       pychestrate-client enroll --server-url https://SERVICE --name POD-LABEL --token-file token.txt
   3. pychestrate-client doctor      check the enrollment and that the service answers
   4. pychestrate-client run         start taking jobs
 
@@ -462,7 +462,7 @@ def _common_options(*, subcommand: bool) -> argparse.ArgumentParser:
     common.add_argument(
         "--state-dir",
         default=unset if subcommand else None,
-        help="Path to the local state directory (default: ~/.pychestrate-client).",
+        help="Path to the local state directory (default: {}).".format(DEFAULT_STATE_DIR_HELP),
     )
     common.add_argument(
         "--verbose",
@@ -515,10 +515,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Redeem an enrollment token and persist the resulting mTLS identity.",
         parents=[sub_common],
     )
-    enroll_parser.add_argument("--service-url", required=True,
+    enroll_parser.add_argument("--server-url", "--service-url", dest="service_url", required=True,
+                               metavar="URL",
                                help="Full URL of the Pychestrate service, for example "
                                     "https://pychestrate.example.com. A path prefix "
-                                    "(https://host/pychestrate) is kept.")
+                                    "(https://host/pychestrate) is kept. Same option as "
+                                    "'pyc login --server-url'; --service-url is the older "
+                                    "spelling and still works.")
     enroll_parser.add_argument("--token", default=None,
                                help="One-time enrollment bootstrap token. It is visible in the process "
                                     "list and shell history; prefer --token-file or the {} "

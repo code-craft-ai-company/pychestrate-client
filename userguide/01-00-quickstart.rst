@@ -77,8 +77,8 @@ In the Pychestrate web UI, open **Admin**, **Enrollment Tokens** and choose
 to mint a token:
 
 - **Project** is the project whose jobs the pod may run.
-- **Pod name** is the label of this machine. Choose it now: the token is
-  bound to it, and the client must enroll under exactly this name.
+- **Pod label** is the name of this machine. Choose it now: the token is
+  bound to it, and the client must enroll under exactly this label.
 
 The page then shows the secret once, with the commands to run. Copy them
 before you leave the page. The secret cannot be shown again, and it works
@@ -96,9 +96,9 @@ user and with the state directory from step 1:
    sudo -u pychestrate /opt/pychestrate-client/bin/pychestrate-client \
        enroll \
        --state-dir /var/lib/pychestrate-client \
-       --service-url https://pychestrate.example.com \
+       --server-url https://pychestrate.example.com \
        --token-file /root/pod-token.txt \
-       --name <pod name>
+       --name <pod label>
 
 Put the token in a file (``--token-file -`` reads it from standard input) or
 in the ``PYCHESTRATE_ENROLLMENT_TOKEN`` environment variable. ``--token
@@ -107,7 +107,15 @@ process list and in your shell history, and the client says so.
 
 ``--state-dir``, ``--verbose``, ``--quiet`` and ``--log-format`` are global
 options and may go before or after the command. Without ``--state-dir`` the
-state goes to ``~/.pychestrate-client`` of whoever runs the command.
+state goes to ``$XDG_DATA_HOME/pychestrate-client`` (normally
+``~/.local/share/pychestrate-client``) of whoever runs the command. A pod that
+was enrolled by an earlier release keeps using ``~/.pychestrate-client`` for as
+long as that directory exists and the new one does not, so nothing has to be
+moved.
+
+``--server-url`` is the same option that ``pyc login --server-url`` takes.
+The older spelling ``--service-url`` still works; the token page in the service
+still prints it, so that its command also runs on a pod with an older client.
 ``pychestrate-client --version`` prints the version, and ``python -m
 ccai.pychestrate.client`` runs the same command line.
 
@@ -160,7 +168,7 @@ What ``enroll`` leaves in the state directory:
      - The certificate authority chain that signed the client certificate.
    * - ``config.json``
      - 0644
-     - The service URL and the client name.
+     - The service URL and the pod label.
    * - ``envelope-signing-keys.json``
      - 0644
      - The public keys the service signs job envelopes with.
@@ -290,8 +298,8 @@ Replace a pod or renew its certificate
 ======================================
 
 The client certificate lasts one year by default and the client has no renew
-command. To replace it, or to move a pod's name to a new machine, revoke the
-old client on the **Clients** page, mint a new token for the same pod name,
+command. To replace it, or to move a pod's label to a new machine, revoke the
+old client on the **Clients** page, mint a new token for the same pod label,
 and run ``enroll`` again with ``--force`` (or into an empty state directory).
 A revoked client no longer receives work and its certificate is refused.
 ``doctor`` warns when the certificate has fewer than 14 days left.
@@ -307,14 +315,14 @@ When something goes wrong
    * - What you see
      - What it means
    * - ``enrollment failed``, status 403, ``REASON: scope_mismatch``
-     - The ``--name`` is not the pod name the token was minted for. The token
-       is still good: run ``enroll`` again with exactly the pod name shown on
+     - The ``--name`` is not the pod label the token was minted for. The token
+       is still good: run ``enroll`` again with exactly the pod label shown on
        the token page.
    * - ``enrollment failed``, ``cannot be redeemed in its current state``
      - The token was already used, expired, or revoked. Mint a new one.
    * - ``enrollment failed: could not connect to HOST:PORT (Connection
        refused)``
-     - Nothing is listening at ``--service-url``, or the address or port is
+     - Nothing is listening at ``--server-url``, or the address or port is
        wrong. Check the URL and that the service is running.
    * - ``enrollment failed: the service at HOST did not answer within 30
        seconds``

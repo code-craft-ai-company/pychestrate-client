@@ -59,7 +59,7 @@ def generate_keypair_and_csr(client_name: str,
         Generates a fresh RSA private key and a PKCS#10 certificate signing
         request bound to the provided ``client_name`` as the X.509 common name.
 
-        :param client_name: Human-readable client name used as the CSR's
+        :param client_name: Pod label (the human-readable name) used as the CSR's
                             subject common name.
         :param key_size: RSA modulus size in bits. Default is 2048.
 
@@ -95,7 +95,7 @@ def build_redeem_payload(bootstrap_secret: str, csr_pem: str, client_name: str,
         :param bootstrap_secret: The one-time enrollment token secret obtained
                                  out-of-band from a Pychestrate administrator.
         :param csr_pem: PEM-encoded PKCS#10 certificate signing request.
-        :param client_name: Human-readable client name to register.
+        :param client_name: Pod label (human-readable name) to register.
         :param attributes: Optional attributes dictionary stored on the
                            registry row for this client.
 
@@ -159,7 +159,7 @@ def derive_api_base_path(service_url: str) -> str:
         carries a prefix (the service behind a proxy under ``/pychestrate``)
         keeps it; a URL that already ends in ``/api/v1`` is used as given.
 
-        :param service_url: The ``--service-url`` the client enrolled with.
+        :param service_url: The ``--server-url`` the client enrolled with.
 
         :returns: The normalized base path, e.g. ``/api/v1`` or
                   ``/pychestrate/api/v1``.
@@ -197,7 +197,7 @@ def describe_request_failure(*, failure: Exception, redeem_url: str, host: str,
     if isinstance(failure, requests.exceptions.Timeout):
         return "the service at {} did not answer within {:g} seconds".format(where, timeout_seconds)
     if isinstance(failure, requests.exceptions.ConnectionError):
-        return "could not connect to {} ({}); check --service-url and that the service is running".format(
+        return "could not connect to {} ({}); check --server-url and that the service is running".format(
             where, _short_reason(failure=failure))
     return "the request to {} failed ({})".format(redeem_url, _short_reason(failure=failure))
 
@@ -234,7 +234,7 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
         :param service_url: Full URL of the Pychestrate service
                             (e.g. ``https://pychestrate.example.com``).
         :param bootstrap_token: The one-time enrollment-token secret.
-        :param client_name: Human-readable client name.
+        :param client_name: Pod label (human-readable name).
         :param state: A :class:`ClientState` bound to the on-disk state dir.
         :param attributes: Optional attributes dictionary stored on the registry row.
         :param verify_tls: Whether to verify the service's TLS certificate during
@@ -265,7 +265,7 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
     if len(client_name) == 0:
         raise BadParameterError(
             "perform_enrollment requires a non-empty 'client_name'.",
-            "client_name", "Pass a human-readable client name.")
+            "client_name", "Pass the pod label the enrollment token was minted for.")
 
     host, scheme, port = _derive_host_and_scheme(service_url=service_url)
 
@@ -334,7 +334,7 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
         raw_body = response.json()
     except ValueError:
         raise HTTPRequestError(
-            "the service at {} answered with something that is not JSON (is --service-url the "
+            "the service at {} answered with something that is not JSON (is --server-url the "
             "Pychestrate service?)".format(redeem_url)) from None
 
     client_id = raw_body.get("client_id")

@@ -7,7 +7,7 @@ import tempfile
 
 from ccai import testbase
 
-from ccai.pychestrate.client.state import ClientState
+from ccai.pychestrate.client.state import ClientState, default_state_dir
 
 
 def test_state_is_not_enrolled_when_empty():
@@ -104,4 +104,50 @@ def test_state_reads_the_installed_signing_key_id():
         })
         testbase.assert_equal(
             state.read_installed_signing_key_id(), "envelope-key-2026")
+    return
+
+
+def test_default_state_dir_is_under_xdg_data_home_or_local_share():
+    """New enrollments go to $XDG_DATA_HOME/pychestrate-client; unset, empty or relative falls back to ~/.local/share."""
+    with tempfile.TemporaryDirectory() as home:
+        chosen = os.path.join(home, "data")
+        results = (
+            default_state_dir(environ={"XDG_DATA_HOME": chosen}, home=home),
+            default_state_dir(environ={}, home=home),
+            default_state_dir(environ={"XDG_DATA_HOME": ""}, home=home),
+            default_state_dir(environ={"XDG_DATA_HOME": "relative/dir"}, home=home),
+        )
+        fallback = os.path.join(home, ".local", "share", "pychestrate-client")
+
+        testbase.assert_equal(
+            results, (os.path.join(chosen, "pychestrate-client"), fallback, fallback, fallback))
+    return
+
+
+def test_an_already_enrolled_pod_keeps_its_old_state_dir_until_the_new_one_exists():
+    """The old ~/.pychestrate-client is used only while it exists and the XDG directory does not."""
+    with tempfile.TemporaryDirectory() as home:
+        current = os.path.join(home, ".local", "share", "pychestrate-client")
+        legacy = os.path.join(home, ".pychestrate-client")
+
+        fresh = default_state_dir(environ={}, home=home)
+        os.makedirs(legacy)
+        upgraded = default_state_dir(environ={}, home=home)
+        os.makedirs(current)
+        both = default_state_dir(environ={}, home=home)
+
+        testbase.assert_equal((fresh, upgraded, both), (current, legacy, current))
+    return
+
+
+def test_a_new_state_dir_is_created_private_under_a_missing_parent():
+    """ensure_dir makes the whole path and leaves the state directory itself 0700."""
+    with tempfile.TemporaryDirectory() as home:
+        state = ClientState(state_dir=default_state_dir(environ={}, home=home))
+        state.ensure_dir()
+
+        testbase.assert_equal(
+            (os.path.isdir(state.state_dir), os.stat(state.state_dir).st_mode & 0o777),
+            (True, 0o700),
+        )
     return

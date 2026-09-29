@@ -19,7 +19,7 @@ Highlights
 
 - mTLS enrollment via a one-time bootstrap token.
 - Periodic heartbeat against the Pychestrate service registry.
-- Local persistent state under ``~/.pychestrate-client`` (configurable).
+- Local persistent state under ``~/.local/share/pychestrate-client`` (configurable).
 - Signed job envelopes verified against the service's RFC 7517 JWK Set,
   fetched and cached locally; an installed key is an operator override.
 - Built on top of the codegen'd ``ccai.pychestrate.rest.client``
@@ -154,16 +154,18 @@ Quick Start
 ===========
 
 Mint a token under **Admin**, **Enrollment Tokens** in the Pychestrate web UI.
-The pod name you give it is the ``--name`` below. Then, on the pod:
+The pod label you give it is the ``--name`` below. Then, on the pod:
 
 .. code-block:: bash
 
-   pychestrate-client enroll --service-url https://pychestrate.example.com \
-       --token-file token.txt --name <pod name>
+   pychestrate-client enroll --server-url https://pychestrate.example.com \
+       --token-file token.txt --name <pod label>
    pychestrate-client doctor
    pychestrate-client run
 
-Runtime state is kept under ``~/.pychestrate-client/`` by default; the
+Runtime state is kept under ``~/.local/share/pychestrate-client/`` by default
+(``$XDG_DATA_HOME/pychestrate-client``; an existing ``~/.pychestrate-client/``
+is still used until the new directory exists); the
 guide above puts it in ``/var/lib/pychestrate-client`` with
 ``--state-dir``, which may go before or after the subcommand. ``pychestrate-client`` is
 only on your ``PATH`` if you put the installing environment's ``bin``

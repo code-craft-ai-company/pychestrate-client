@@ -66,7 +66,7 @@ class _Enroll:
         return {"client_id": "abc", "config_path": "/x/config.json"}
 
 
-BASE = ["enroll", "--service-url", "https://pychestrate.example.com", "--name", "pod-a"]
+BASE = ["enroll", "--server-url", "https://pychestrate.example.com", "--name", "pod-a"]
 
 
 def test_global_options_work_before_and_after_the_command():
@@ -275,5 +275,31 @@ def test_the_json_log_format_writes_one_object_per_line():
     testbase.assert_equal(
         (entry["level"], entry["logger"], entry["message"], sorted(entry)),
         ("WARNING", "ccai.demo", "heartbeat failed: boom", ["level", "logger", "message", "time"]),
+    )
+    return
+
+
+def test_enroll_takes_server_url_like_pyc_and_still_takes_the_older_service_url():
+    """pyc calls the option --server-url; the client's --service-url keeps working as the same option."""
+    with _Enroll() as new_spelling:
+        new_code, _out, _err = _run(["enroll", "--server-url", "https://a.example.com", "--name", "pod-a", "--token", "t"])
+    with _Enroll() as old_spelling:
+        old_code, _out, _err = _run(["enroll", "--service-url", "https://b.example.com", "--name", "pod-a", "--token", "t"])
+
+    testbase.assert_equal(
+        (new_code, new_spelling.calls[0]["service_url"], old_code, old_spelling.calls[0]["service_url"]),
+        (0, "https://a.example.com", 0, "https://b.example.com"),
+    )
+    return
+
+
+def test_enroll_help_names_the_shared_spelling_first_and_the_state_default():
+    code, out, _err = _run(["enroll", "--help"])
+    top_code, top_out, _top_err = _run(["--help"])
+
+    testbase.assert_equal(
+        (code, "--server-url URL, --service-url URL" in out, "pyc login --server-url" in out,
+         top_code, "--server-url" in top_out and "--service-url" not in top_out, ".local/share/pychestrate-client" in out),
+        (0, True, True, 0, True, True),
     )
     return
