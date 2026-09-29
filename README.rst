@@ -159,12 +159,13 @@ The pod name you give it is the ``--name`` below. Then, on the pod:
 .. code-block:: bash
 
    pychestrate-client enroll --service-url https://pychestrate.example.com \
-       --token <secret> --name <pod name>
+       --token-file token.txt --name <pod name>
+   pychestrate-client doctor
    pychestrate-client run
 
 Runtime state is kept under ``~/.pychestrate-client/`` by default; the
 guide above puts it in ``/var/lib/pychestrate-client`` with
-``--state-dir``, which goes before the subcommand. ``pychestrate-client`` is
+``--state-dir``, which may go before or after the subcommand. ``pychestrate-client`` is
 only on your ``PATH`` if you put the installing environment's ``bin``
 directory there.
 

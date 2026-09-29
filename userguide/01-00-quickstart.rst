@@ -94,23 +94,47 @@ user and with the state directory from step 1:
 .. code-block:: bash
 
    sudo -u pychestrate /opt/pychestrate-client/bin/pychestrate-client \
-       --state-dir /var/lib/pychestrate-client \
        enroll \
+       --state-dir /var/lib/pychestrate-client \
        --service-url https://pychestrate.example.com \
-       --token <secret> \
+       --token-file /root/pod-token.txt \
        --name <pod name>
 
-``--state-dir`` is a global option, so it goes before ``enroll``. Without it
-the state goes to ``~/.pychestrate-client`` of whoever runs the command.
+Put the token in a file (``--token-file -`` reads it from standard input) or
+in the ``PYCHESTRATE_ENROLLMENT_TOKEN`` environment variable. ``--token
+<secret>`` also works, but a token on the command line is visible in the
+process list and in your shell history, and the client says so.
+
+``--state-dir``, ``--verbose``, ``--quiet`` and ``--log-format`` are global
+options and may go before or after the command. Without ``--state-dir`` the
+state goes to ``~/.pychestrate-client`` of whoever runs the command.
+``pychestrate-client --version`` prints the version, and ``python -m
+ccai.pychestrate.client`` runs the same command line.
 
 ``enroll`` generates a private key and a certificate request on the pod,
 sends the request and the token to the service, and stores what comes back.
 On success it prints ``enrollment succeeded`` and a JSON summary with the new
-``client_id``. On failure it prints ``enrollment failed`` with the service's
-answer, exits with status 2, and leaves the state directory empty.
+``client_id`` (add ``--json`` to print only the JSON). On failure it prints
+one line, ``enrollment failed: ...``, with the reason, and exits with status
+2. It waits 30 seconds for the service (``--timeout <seconds>`` changes that).
+
+A state directory that is already enrolled is refused, since a new identity
+would silently replace its client id and key: add ``--force`` to replace it on
+purpose, or use another ``--state-dir``.
 
 A token is spent by a successful ``enroll``. A rejection for the wrong pod
 name does not spend it, so run ``enroll`` again with the right name.
+
+Then check the pod:
+
+.. code-block:: bash
+
+   pychestrate-client --state-dir /var/lib/pychestrate-client doctor
+
+``doctor`` lists the enrollment files, how long the client certificate has
+left, whether the private key is readable only by its owner, and whether the
+service answers. It exits 1 when something failed and 0 otherwise (warnings
+are allowed); ``--offline`` skips the call to the service.
 
 What ``enroll`` leaves in the state directory:
 
@@ -185,9 +209,12 @@ client*. A client the service has not heard from for 90 seconds shows as
 
 A job now dispatched to the pod runs here. ``run`` accepts
 ``--interval <seconds>`` for the heartbeat and ``--poll-timeout <seconds>``
-for how long each poll waits (30 by default). Add ``--verbose`` before the
-subcommand for debug logging. The ``heartbeat`` subcommand runs only the
-heartbeat, for a machine that must show as alive but must not take work.
+for how long each poll waits (30 by default). Add ``--verbose`` for debug
+logging, ``--quiet`` for warnings only, or ``--log-format json`` for one JSON
+object per log line. The ``heartbeat`` subcommand runs only the heartbeat, for
+a machine that must show as alive but must not take work; ``heartbeat --once``
+sends a single heartbeat and exits 0 when the service accepted it, which is
+handy in a monitoring check.
 
 Stopping ``run`` with ``SIGTERM`` or Ctrl+C is graceful. The client takes no
 new work, lets a job that is running finish and report, waits for the poll
@@ -265,8 +292,9 @@ Replace a pod or renew its certificate
 The client certificate lasts one year by default and the client has no renew
 command. To replace it, or to move a pod's name to a new machine, revoke the
 old client on the **Clients** page, mint a new token for the same pod name,
-and run ``enroll`` again, into an empty state directory. A revoked client no
-longer receives work and its certificate is refused.
+and run ``enroll`` again with ``--force`` (or into an empty state directory).
+A revoked client no longer receives work and its certificate is refused.
+``doctor`` warns when the certificate has fewer than 14 days left.
 
 
 When something goes wrong
@@ -284,6 +312,26 @@ When something goes wrong
        the token page.
    * - ``enrollment failed``, ``cannot be redeemed in its current state``
      - The token was already used, expired, or revoked. Mint a new one.
+   * - ``enrollment failed: could not connect to HOST:PORT (Connection
+       refused)``
+     - Nothing is listening at ``--service-url``, or the address or port is
+       wrong. Check the URL and that the service is running.
+   * - ``enrollment failed: the service at HOST did not answer within 30
+       seconds``
+     - The service accepted the connection and did not reply. Check the
+       service, or wait longer with ``--timeout``.
+   * - ``enrollment failed: the TLS certificate of HOST could not be
+       verified``
+     - The service's certificate is not signed by a public authority. For a
+       development service with a self-signed certificate only, add
+       ``--insecure``.
+   * - ``enrollment failed: this state directory (...) is already enrolled
+       as client ...``
+     - Enrolling again would replace that identity. Add ``--force`` to do so,
+       or choose another ``--state-dir``.
+   * - ``doctor`` prints ``FAIL``
+     - The line says what to do: enroll, replace an expired certificate, or
+       reach the service.
    * - Heartbeat and dispatch calls fail with ``401`` and ``Mutual-TLS client
        certificate required``
      - The service URL does not lead to a front end that verifies client

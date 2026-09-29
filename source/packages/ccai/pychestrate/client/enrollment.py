@@ -19,6 +19,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import logging
+import re
 import os
 
 import requests
@@ -28,7 +29,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509 import CertificateSigningRequestBuilder, Name, NameAttribute
 from cryptography.x509.oid import NameOID
 
-from ccai.errors.exceptions import BadParameterError, HTTPRequestError
+from ccai.errors.exceptions import BadParameterError, ConfigurationError, HTTPRequestError
 
 from ccai.pychestrate.client.pychestratemtlsclient import DEFAULT_API_BASE_PATH, normalize_base_path
 from ccai.pychestrate.client.signing_keys import persist_signing_keys_from_enrollment
@@ -36,6 +37,14 @@ from ccai.pychestrate.client.state import ClientState
 
 
 DEFAULT_RSA_KEY_SIZE = 2048
+
+#: How long the redeem call may take before enrollment gives up. Without a
+#: limit a service that accepts the connection and never answers held the
+#: command until the operator interrupted it.
+DEFAULT_ENROLLMENT_TIMEOUT_SECONDS = 30.0
+
+#: The longest slice of a service's error body an enrollment error repeats.
+MAX_ERROR_BODY_CHARACTERS = 500
 
 #: The redeem endpoint, relative to the API base path.
 ENROLLMENT_REDEEM_LEAF = "/enrollment-tokens/redeem"
@@ -165,10 +174,53 @@ def derive_api_base_path(service_url: str) -> str:
     return rtnval
 
 
+def describe_request_failure(*, failure: Exception, redeem_url: str, host: str,
+                             port: Optional[int], timeout_seconds: float) -> str:
+    """
+        Turns an error from the HTTP library into one line an operator can
+        act on (a refused connection used to print a page of traceback).
+
+        :param failure: The exception ``requests`` raised.
+        :param redeem_url: The URL that was called.
+        :param host: The service host.
+        :param port: The service port, or None for the scheme's default.
+        :param timeout_seconds: The timeout that applied.
+
+        :returns: The message, without a trailing period.
+    """
+    where = host if port is None else "{}:{}".format(host, port)
+    if isinstance(failure, requests.exceptions.SSLError):
+        return (
+            "the TLS certificate of {} could not be verified ({}). For a development service "
+            "with a self-signed certificate, add --insecure".format(where, _short_reason(failure=failure))
+        )
+    if isinstance(failure, requests.exceptions.Timeout):
+        return "the service at {} did not answer within {:g} seconds".format(where, timeout_seconds)
+    if isinstance(failure, requests.exceptions.ConnectionError):
+        return "could not connect to {} ({}); check --service-url and that the service is running".format(
+            where, _short_reason(failure=failure))
+    return "the request to {} failed ({})".format(redeem_url, _short_reason(failure=failure))
+
+
+def _short_reason(*, failure: Exception) -> str:
+    """The part of a ``requests`` error an operator needs: the OS error when there is one, else a short text."""
+    text = str(failure)
+    found = re.search(r"\[Errno -?\d+\] ([^'\")]+)", text)
+    if found is not None:
+        return found.group(1).strip()
+    found = re.search(r"\((?:certificate verify failed|hostname)[^)]*\)", text)
+    if found is not None:
+        return found.group(0).strip("()")
+    first_line = text.splitlines()[0] if len(text) > 0 else type(failure).__name__
+    return first_line[:160]
+
+
 def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
                        state: ClientState, attributes: Optional[Dict[str, Any]] = None,
                        verify_tls: bool = True,
-                       session: Optional[requests.Session] = None) -> Dict[str, Any]:
+                       session: Optional[requests.Session] = None,
+                       timeout_seconds: float = DEFAULT_ENROLLMENT_TIMEOUT_SECONDS,
+                       overwrite: bool = False) -> Dict[str, Any]:
     """
         Executes the full enrollment flow:
 
@@ -190,12 +242,17 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
                            setups; defaults to ``True``.
         :param session: Optional pre-built :class:`requests.Session` to use for
                         the HTTP call. Injected for testability.
+        :param timeout_seconds: How long the redeem call may take (default 30).
+        :param overwrite: Replace the identity of a state directory that is
+                          already enrolled. Without it an enrolled directory
+                          is refused, since a new identity would silently
+                          replace its client id and key.
 
         :returns: A dictionary describing the persisted enrollment result with
                   keys ``client_id``, ``client_cert_path``, ``client_key_path``,
                   ``service_ca_path``, and ``config_path``.
 
-        :raises: BadParameterError, HTTPRequestError
+        :raises: BadParameterError, ConfigurationError, HTTPRequestError
     """
     if len(service_url) == 0:
         raise BadParameterError(
@@ -211,6 +268,16 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
             "client_name", "Pass a human-readable client name.")
 
     host, scheme, port = _derive_host_and_scheme(service_url=service_url)
+
+    if overwrite is False and state.is_enrolled():
+        try:
+            existing_id = state.read_client_id()
+        except ConfigurationError:
+            existing_id = "(unreadable)"
+        raise ConfigurationError(
+            "this state directory ({}) is already enrolled as client {}; enrolling again would replace "
+            "its identity and key. Use --force to replace it, or pass another --state-dir".format(
+                state.state_dir, existing_id))
 
     state.ensure_dir()
 
@@ -236,25 +303,39 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
     if http is None:
         http = requests.Session()
 
-    response = http.post(
-        redeem_url,
-        json=payload,
-        headers={"Content-Type": "application/json"},
-        verify=verify_tls,
-    )
+    try:
+        response = http.post(
+            redeem_url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            verify=verify_tls,
+            timeout=timeout_seconds,
+        )
+    except requests.exceptions.RequestException as requesterr:
+        raise HTTPRequestError(describe_request_failure(
+            failure=requesterr, redeem_url=redeem_url, host=host, port=port,
+            timeout_seconds=timeout_seconds)) from None
 
     if response.status_code != 200:
+        body = response.text
+        if len(body) > MAX_ERROR_BODY_CHARACTERS:
+            body = body[:MAX_ERROR_BODY_CHARACTERS] + "..."
         errmsg_lines = [
             "Enrollment redeem call failed.",
             "    url: {}".format(redeem_url),
             "    status: {}".format(response.status_code),
             "    body:",
-            response.text,
+            body,
         ]
         errmsg = os.linesep.join(errmsg_lines)
         raise HTTPRequestError(errmsg)
 
-    raw_body = response.json()
+    try:
+        raw_body = response.json()
+    except ValueError:
+        raise HTTPRequestError(
+            "the service at {} answered with something that is not JSON (is --service-url the "
+            "Pychestrate service?)".format(redeem_url)) from None
 
     client_id = raw_body.get("client_id")
     client_cert_pem = raw_body.get("client_certificate_pem")

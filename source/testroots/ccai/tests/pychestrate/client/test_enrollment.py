@@ -7,9 +7,11 @@
 import os
 import tempfile
 
+import requests
+
 from ccai import testbase
 
-from ccai.errors.exceptions import BadParameterError, HTTPRequestError
+from ccai.errors.exceptions import BadParameterError, ConfigurationError, HTTPRequestError
 
 from ccai.pychestrate.client.enrollment import (
     build_redeem_payload,
@@ -40,17 +42,22 @@ class FakeSession:
         single POST made by the enrollment flow.
     """
 
-    def __init__(self, response):
+    def __init__(self, response=None, failure=None):
         self._response = response
+        self._failure = failure
         self.last_url = None
         self.last_json = None
         self.last_verify = None
+        self.last_timeout = None
         return
 
-    def post(self, url, json=None, headers=None, verify=None):
+    def post(self, url, json=None, headers=None, verify=None, timeout=None):
         self.last_url = url
         self.last_json = json
         self.last_verify = verify
+        self.last_timeout = timeout
+        if self._failure is not None:
+            raise self._failure
         return self._response
 
 
@@ -234,4 +241,126 @@ def test_perform_enrollment_rejects_bad_service_url():
             raised = True
 
         testbase.assert_true(raised)
+    return
+
+
+GOOD_BODY = {
+    "client_id": "11111111-2222-3333-4444-555555555555",
+    "client_certificate_pem": "-----BEGIN CERTIFICATE-----\nCC\n-----END CERTIFICATE-----",
+    "ca_chain_pem": "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
+}
+
+
+def _enroll(state, session, **overrides):
+    arguments = dict(
+        service_url="https://pychestrate.example.com:8443",
+        bootstrap_token="boot-secret",
+        client_name="unit-client",
+        state=state,
+        session=session,
+    )
+    arguments.update(overrides)
+    return perform_enrollment(**arguments)
+
+
+def _failure_message(session, **overrides):
+    """The one-line message enrollment raises when the request itself fails."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        try:
+            _enroll(state, session, **overrides)
+        except HTTPRequestError as failure:
+            return (str(failure), state.is_enrolled())
+    return (None, None)
+
+
+def test_enrollment_gives_the_redeem_call_a_thirty_second_timeout_by_default():
+    session = FakeSession(response=FakeResponse(status_code=200, body=GOOD_BODY))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        _enroll(ClientState(state_dir=os.path.join(tmpdir, "a")), session)
+        default_timeout = session.last_timeout
+        _enroll(ClientState(state_dir=os.path.join(tmpdir, "b")), session, timeout_seconds=5)
+
+    testbase.assert_equal((default_timeout, session.last_timeout), (30.0, 5))
+    return
+
+
+def test_a_refused_connection_is_one_line_naming_the_host_and_the_os_reason():
+    refused = requests.exceptions.ConnectionError(
+        "HTTPSConnectionPool(host='pychestrate.example.com', port=8443): Max retries exceeded with url: "
+        "/api/v1/enrollment-tokens/redeem (Caused by NewConnectionError('<urllib3.connection.HTTPSConnection "
+        "object at 0x1>: Failed to establish a new connection: [Errno 111] Connection refused'))")
+    message, enrolled = _failure_message(FakeSession(failure=refused))
+
+    testbase.assert_equal(
+        (len(message.splitlines()), "could not connect to pychestrate.example.com:8443" in message,
+         "Connection refused" in message, "Traceback" in message, "HTTPSConnectionPool" in message, enrolled),
+        (1, True, True, False, False, False),
+    )
+    return
+
+
+def test_a_service_that_does_not_answer_is_reported_with_the_time_waited():
+    message, _enrolled = _failure_message(
+        FakeSession(failure=requests.exceptions.ReadTimeout("read timed out")), timeout_seconds=7)
+
+    testbase.assert_equal(
+        (message, ), ("the service at pychestrate.example.com:8443 did not answer within 7 seconds", ))
+    return
+
+
+def test_a_certificate_the_client_cannot_verify_suggests_insecure_for_development_only():
+    message, _enrolled = _failure_message(FakeSession(failure=requests.exceptions.SSLError(
+        "HTTPSConnectionPool(host='x', port=443): Max retries exceeded (Caused by SSLError(SSLCertVerificationError(1, "
+        "'[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: self-signed certificate (_ssl.c:1000)')))")))
+
+    testbase.assert_equal(
+        (len(message.splitlines()), "could not be verified" in message, "--insecure" in message),
+        (1, True, True),
+    )
+    return
+
+
+def test_an_answer_that_is_not_json_is_named_as_such():
+    class NotJson(FakeResponse):
+        def json(self):
+            raise ValueError("Expecting value")
+
+    message, _enrolled = _failure_message(FakeSession(response=NotJson(status_code=200, body="<html>")))
+
+    testbase.assert_equal(("is not JSON" in message, len(message.splitlines())), (True, 1))
+    return
+
+
+def test_a_long_error_body_is_cut_short():
+    session = FakeSession(response=FakeResponse(status_code=500, body="x" * 5000))
+    message, _enrolled = _failure_message(session)
+
+    testbase.assert_equal((len(message) < 800, message.endswith("...")), (True, True))
+    return
+
+
+def test_an_enrolled_state_directory_is_not_replaced_without_asking():
+    session = FakeSession(response=FakeResponse(status_code=200, body=GOOD_BODY))
+    other = dict(GOOD_BODY, client_id="99999999-8888-7777-6666-555555555555")
+    second = FakeSession(response=FakeResponse(status_code=200, body=other))
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        _enroll(state, session)
+        refused = None
+        try:
+            _enroll(state, second)
+        except ConfigurationError as refusal:
+            refused = str(refusal)
+        after_refusal = state.read_client_id()
+        called_service = second.last_url is not None
+        _enroll(state, second, overwrite=True)
+        after_force = state.read_client_id()
+
+    testbase.assert_equal(
+        (refused is not None and GOOD_BODY["client_id"] in refused and "--force" in refused, after_refusal,
+         called_service, after_force),
+        (True, GOOD_BODY["client_id"], False, other["client_id"]),
+    )
     return
