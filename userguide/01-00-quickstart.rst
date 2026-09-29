@@ -314,10 +314,11 @@ When something goes wrong
 
    * - What you see
      - What it means
-   * - ``enrollment failed``, status 403, ``REASON: scope_mismatch``
-     - The ``--name`` is not the pod label the token was minted for. The token
-       is still good: run ``enroll`` again with exactly the pod label shown on
-       the token page.
+   * - ``enrollment failed``: the service refused the enrollment (HTTP 403),
+       ``REASON: pod_name_mismatch`` or ``scope_mismatch``
+     - The ``--name`` is not the pod label the token was minted for. The
+       message names the one it expects (``EXPECTED_POD_NAME``). The token is
+       still good: run ``enroll`` again with exactly that label.
    * - ``enrollment failed``, ``cannot be redeemed in its current state``
      - The token was already used, expired, or revoked. Mint a new one.
    * - ``enrollment failed: could not connect to HOST:PORT (Connection

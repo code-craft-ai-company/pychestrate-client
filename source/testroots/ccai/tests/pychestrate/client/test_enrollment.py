@@ -364,3 +364,45 @@ def test_an_enrolled_state_directory_is_not_replaced_without_asking():
         (True, GOOD_BODY["client_id"], False, other["client_id"]),
     )
     return
+
+
+_REJECTION_DETAIL = "\n".join([
+    "Enrollment rejected by identity verifier.",
+    "TOKEN_ID: 0f6c2c1e-1111-4000-8000-000000000001",
+    "REASON: scope_mismatch",
+    "EXPECTED_POD_NAME: lab-pod-01",
+    "HINT: this token was minted for the pod name above and has not been used up; enroll again with exactly that name.",
+])
+
+
+def test_a_refused_enrollment_prints_the_services_detail_line_by_line_with_the_expected_name():
+    """The 403 for a wrong --name names the label the token expects, as readable lines and not as raw JSON."""
+    session = FakeSession(response=FakeResponse(status_code=403, body={
+        "type": "/errors/forbidden", "title": "Forbidden", "status": 403, "detail": _REJECTION_DETAIL,
+        "instance": "/api/v1/enrollment/redeem",
+    }))
+    message, enrolled = _failure_message(session)
+    lines = message.splitlines()
+
+    testbase.assert_equal(
+        (lines[0], "    EXPECTED_POD_NAME: lab-pod-01" in lines, any("enroll again with exactly that name" in line for line in lines),
+         "{" in message, len(lines), enrolled),
+        ("the service refused the enrollment (HTTP 403: Forbidden)", True, True, False, 6, False),
+    )
+    return
+
+
+def test_a_very_long_refusal_detail_is_cut_short():
+    session = FakeSession(response=FakeResponse(status_code=400, body={"detail": "\n".join("line {}".format(n) for n in range(40))}))
+    message, _enrolled = _failure_message(session)
+
+    testbase.assert_equal((len(message.splitlines()), message.splitlines()[-1]), (14, "    ..."))
+    return
+
+
+def test_a_refusal_that_is_not_a_problem_document_keeps_the_raw_body():
+    session = FakeSession(response=FakeResponse(status_code=502, body={"message": "bad gateway"}))
+    message, _enrolled = _failure_message(session)
+
+    testbase.assert_equal(("Enrollment redeem call failed." in message, "status: 502" in message, "bad gateway" in message), (True, True, True))
+    return

@@ -154,7 +154,9 @@ Quick Start
 ===========
 
 Mint a token under **Admin**, **Enrollment Tokens** in the Pychestrate web UI.
-The pod label you give it is the ``--name`` below. Then, on the pod:
+The pod label you give it is the ``--name`` below, and it must match exactly:
+the service refuses the enrollment otherwise, names the label the token expects,
+and does not use the token up. Then, on the pod:
 
 .. code-block:: bash
 

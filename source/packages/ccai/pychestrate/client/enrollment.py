@@ -46,6 +46,9 @@ DEFAULT_ENROLLMENT_TIMEOUT_SECONDS = 30.0
 #: The longest slice of a service's error body an enrollment error repeats.
 MAX_ERROR_BODY_CHARACTERS = 500
 
+#: The most lines of a problem document's detail printed for a refused enrollment.
+MAX_REFUSAL_DETAIL_LINES = 12
+
 #: The redeem endpoint, relative to the API base path.
 ENROLLMENT_REDEEM_LEAF = "/enrollment-tokens/redeem"
 ENROLLMENT_REDEEM_PATH = DEFAULT_API_BASE_PATH + ENROLLMENT_REDEEM_LEAF
@@ -172,6 +175,46 @@ def derive_api_base_path(service_url: str) -> str:
     else:
         rtnval = normalize_base_path(base_path=path + DEFAULT_API_BASE_PATH)
     return rtnval
+
+
+def describe_refusal(*, response: Any, redeem_url: str) -> str:
+    """
+        Turns the service's refusal of the redeem call into text an operator
+        can act on. The service answers with a problem document whose detail
+        lists what was wrong (and, for a wrong ``--name``, which name the
+        token expects); that is printed line by line instead of as raw JSON.
+        An answer that is not a problem document keeps the raw, cut-short body.
+
+        :param response: The non-200 HTTP response.
+        :param redeem_url: The URL that was called.
+
+        :returns: The message, one line per line of detail.
+    """
+    try:
+        document = response.json()
+    except ValueError:
+        document = None
+    if isinstance(document, dict) and isinstance(document.get("detail"), str) and len(document["detail"].strip()) > 0:
+        title = document.get("title")
+        heading = "the service refused the enrollment (HTTP {}{})".format(
+            response.status_code, ": {}".format(title) if isinstance(title, str) and len(title) > 0 else "")
+        detail_lines = [line.strip() for line in document["detail"].splitlines() if len(line.strip()) > 0]
+        shown = ["    {}".format(line) for line in detail_lines[:MAX_REFUSAL_DETAIL_LINES]]
+        if len(detail_lines) > MAX_REFUSAL_DETAIL_LINES:
+            shown.append("    ...")
+        return os.linesep.join([heading] + shown)
+
+    body = response.text
+    if len(body) > MAX_ERROR_BODY_CHARACTERS:
+        body = body[:MAX_ERROR_BODY_CHARACTERS] + "..."
+    errmsg_lines = [
+        "Enrollment redeem call failed.",
+        "    url: {}".format(redeem_url),
+        "    status: {}".format(response.status_code),
+        "    body:",
+        body,
+    ]
+    return os.linesep.join(errmsg_lines)
 
 
 def describe_request_failure(*, failure: Exception, redeem_url: str, host: str,
@@ -317,18 +360,7 @@ def perform_enrollment(service_url: str, bootstrap_token: str, client_name: str,
             timeout_seconds=timeout_seconds)) from None
 
     if response.status_code != 200:
-        body = response.text
-        if len(body) > MAX_ERROR_BODY_CHARACTERS:
-            body = body[:MAX_ERROR_BODY_CHARACTERS] + "..."
-        errmsg_lines = [
-            "Enrollment redeem call failed.",
-            "    url: {}".format(redeem_url),
-            "    status: {}".format(response.status_code),
-            "    body:",
-            body,
-        ]
-        errmsg = os.linesep.join(errmsg_lines)
-        raise HTTPRequestError(errmsg)
+        raise HTTPRequestError(describe_refusal(response=response, redeem_url=redeem_url))
 
     try:
         raw_body = response.json()
