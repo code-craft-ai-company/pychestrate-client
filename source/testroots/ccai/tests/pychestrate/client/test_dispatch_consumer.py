@@ -107,12 +107,14 @@ class _FakeDispatchGroup:
 
     def __init__(self, signing_keys=None):
         self.acks = []
+        self.ack_options = []
         self._signing_keys = signing_keys if signing_keys is not None else []
         self.signing_key_calls = 0
         return
 
     def dispatch_ack_run(self, run_id, body, **kwargs):
         self.acks.append((run_id, body))
+        self.ack_options.append(kwargs)
         return None
 
     def envelope_signing_keys_list(self, **kwargs):
@@ -1004,6 +1006,41 @@ def test_consumer_loop_stop_ends_a_pause_promptly():
 
     testbase.assert_true(loop_thread.is_alive() is False)
     testbase.assert_true(stop_seconds < 2.0)
+    return
+
+
+def test_the_dispatch_ack_names_the_202_the_service_answers_with():
+    """
+    **Feature: dispatch protocol (E2E-31)**
+    **Property: the dispatch-ack call lists 202 (what the service answers) and
+    204 as the statuses it expects. The pinned generated method expects only 204
+    and logs every other 2xx as an ERROR, so every successful ack printed
+    ``ERROR code=202``.**
+    """
+    signing_key = Ed25519PrivateKey.generate()
+    envelope = _sample_envelope()
+    signature_hex = signing_key.sign(serialize_envelope_canonical(envelope)).hex()
+    pending = _pending_dict(envelope, signature_hex)
+
+    def _fake_execute(*, state, envelope, local_run_id, aspects, progress_reporter=None):
+        return TestbaseRunOutcome(
+            status=RUN_STATUS_SUCCEEDED, exit_code=0,
+            output_dir="/tmp/out", command=["testbase"], detail="ok")
+
+    original_execute = dc_mod.execute_job_envelope
+    dc_mod.execute_job_envelope = _fake_execute
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_enrolled_state(os.path.join(tmpdir, "state"), signing_key)
+            client = _FakeRestClient(sequence=[])
+            handle_one_dispatch(
+                client=client, state=state, pending=pending,
+                aspects=DispatchConsumerAspects())
+            options = list(client.dispatch.ack_options)
+    finally:
+        dc_mod.execute_job_envelope = original_execute
+
+    testbase.assert_equal([sorted(entry.get("exp_status", [])) for entry in options], [[202, 204]])
     return
 
 
