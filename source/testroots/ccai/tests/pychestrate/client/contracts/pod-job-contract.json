@@ -1,0 +1,61 @@
+{
+  "contract_version": 1,
+  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ.",
+  "progress_format_tag": "testbase-v1",
+  "test_run_envelope_params": [
+    {
+      "name": "a trigger with no inputs runs the catalog entry's root and includes",
+      "catalog_entry_metadata": {
+        "root": "/srv/tests",
+        "includes": [
+          "ccai.tests.a"
+        ]
+      },
+      "trigger_inputs": {},
+      "params": {
+        "runner": "testbase",
+        "root": "/srv/tests",
+        "includes": [
+          "ccai.tests.a"
+        ],
+        "extras": {}
+      },
+      "pod_command_contains": [
+        "--root",
+        "/srv/tests",
+        "--includes=ccai.tests.a"
+      ]
+    },
+    {
+      "name": "trigger includes and root win over the catalog entry's",
+      "catalog_entry_metadata": {
+        "root": "/srv/tests",
+        "includes": [
+          "ccai.tests.a"
+        ]
+      },
+      "trigger_inputs": {
+        "root": "/opt/other",
+        "includes": [
+          "ccai.tests.b",
+          "ccai.tests.c"
+        ]
+      },
+      "params": {
+        "runner": "testbase",
+        "root": "/opt/other",
+        "includes": [
+          "ccai.tests.b",
+          "ccai.tests.c"
+        ],
+        "extras": {}
+      },
+      "pod_command_contains": [
+        "--root",
+        "/opt/other",
+        "--includes=ccai.tests.b",
+        "--includes=ccai.tests.c"
+      ]
+    }
+  ]
+}
