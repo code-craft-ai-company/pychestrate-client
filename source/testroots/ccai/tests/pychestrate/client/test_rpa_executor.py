@@ -83,7 +83,8 @@ class _RunRecorder:
         head (``git`` vs everything else).
     """
 
-    def __init__(self, *, job_returncode=0, raise_for=None, timeout_for=None, job_stderr=b""):
+    def __init__(self, *, job_returncode=0, raise_for=None, timeout_for=None, job_stderr=b"", job_stdout=b"job output"):
+        self._job_stdout = job_stdout
         self._job_stderr = job_stderr
         self._job_returncode = job_returncode
         self._raise_for = raise_for
@@ -103,7 +104,7 @@ class _RunRecorder:
             rtnval = _CompletedStub(returncode=0)
             return rtnval
         rtnval = _CompletedStub(
-            returncode=self._job_returncode, stdout=b"job output", stderr=self._job_stderr)
+            returncode=self._job_returncode, stdout=self._job_stdout, stderr=self._job_stderr)
         return rtnval
 
 
@@ -222,29 +223,32 @@ def test_a_failed_job_says_why_from_the_last_line_of_its_error_output():
         "RPA job exited with code 3." says little (the service records it as the job's reason); the job's own last line of
         error output is added, cut to 200 characters, and a job that wrote nothing keeps the plain text.
     """
-    def _detail(stderr: bytes, returncode: int = 3) -> str:
+    def _detail(stderr: bytes, returncode: int = 3, stdout: bytes = b"job output") -> str:
         with tempfile.TemporaryDirectory() as tmpdir:
             local_source = os.path.join(tmpdir, "jobs")
             os.makedirs(local_source)
             state = ClientState(state_dir=os.path.join(tmpdir, "state"))
             state.ensure_dir()
-            aspects = RpaExecutorAspects(run_func=_RunRecorder(job_returncode=returncode, job_stderr=stderr))
+            aspects = RpaExecutorAspects(run_func=_RunRecorder(job_returncode=returncode, job_stderr=stderr, job_stdout=stdout))
             outcome = execute_rpa_envelope(
                 state=state, envelope=_sample_rpa_envelope(source_kind="local", source_ref=local_source), local_run_id="local", aspects=aspects)
             return outcome.detail
 
     with_error = _detail(b"starting\nTraceback...\nValueError: the packet asked to fail\n\n")
-    silent = _detail(b"")
+    silent = _detail(b"", stdout=b"")
     long_line = _detail(b"x" * 500)
     succeeded = _detail(b"warning: something", returncode=0)
+    # A streamed run has no separate error output: the last line of the merged output, not a progress marker, is read.
+    merged = _detail(b"", stdout=b"hello\nPYC-PROGRESS {\"percent\": 100}\nthe packet asked to fail\nPYC-PROGRESS {\"percent\": 100}\n")
 
     testbase.assert_equal(
-        (with_error, silent, long_line, succeeded),
+        (with_error, silent, long_line, succeeded, merged),
         (
             "RPA job exited with code 3: ValueError: the packet asked to fail",
             "RPA job exited with code 3.",
             "RPA job exited with code 3: " + "x" * 199 + "\u2026",
             "RPA job completed with exit code 0.",
+            "RPA job exited with code 3: the packet asked to fail",
         ),
     )
     return

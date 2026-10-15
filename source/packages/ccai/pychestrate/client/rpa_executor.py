@@ -780,8 +780,8 @@ def run_streaming(*, command: List[str], cwd: str, env: Dict[str, str],
 
 def _last_line_of(path: str, limit: int = 200) -> str:
     """
-        The last non-empty line of a text file (read from its last 4 KB), cut to ``limit`` characters; "" when the
-        file is missing or empty.
+        The last non-empty line of a text file (read from its last 4 KB) that is not a progress marker, cut to ``limit``
+        characters; "" when the file is missing or has no such line.
     """
     try:
         with open(path, "rb") as handle:
@@ -791,7 +791,7 @@ def _last_line_of(path: str, limit: int = 200) -> str:
             tail = handle.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    lines = [line.strip() for line in tail.splitlines() if len(line.strip()) > 0]
+    lines = [line.strip() for line in tail.splitlines() if len(line.strip()) > 0 and not line.strip().startswith("PYC-PROGRESS")]
     if len(lines) == 0:
         return ""
     rtnval = lines[-1] if len(lines[-1]) <= limit else lines[-1][: limit - 1] + "\u2026"
@@ -1051,7 +1051,8 @@ def execute_rpa_envelope(*, state: ClientState, envelope: Dict[str, Any],
 
     # "exited with code 3" says little; the job's own last line of error output says why.
     if status == RPA_STATUS_FAILED and isinstance(exit_code, int) and exit_code != 0:
-        last_error = _last_line_of(os.path.join(output_dir, "stderr.log"))
+        # A streamed run merges the error output into the standard output, so the last line of that is the one to read then.
+        last_error = _last_line_of(os.path.join(output_dir, "stderr.log")) or _last_line_of(os.path.join(output_dir, "stdout.log"))
         if len(last_error) > 0:
             detail = "RPA job exited with code {}: {}".format(exit_code, last_error)
 
