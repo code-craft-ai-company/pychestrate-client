@@ -241,14 +241,18 @@ def test_a_failed_job_says_why_from_the_last_line_of_its_error_output():
     # A streamed run has no separate error output: the last line of the merged output, not a progress marker, is read.
     merged = _detail(b"", stdout=b"hello\nPYC-PROGRESS {\"percent\": 100}\nthe packet asked to fail\nPYC-PROGRESS {\"percent\": 100}\n")
 
+    # The taskplus engine prints its result block, then a banner line last.
+    engine = _detail(b"", stdout=b"RESULT CODE: 4\nSTDOUT:\n    about to fail\n\nSTDERR:\n    the ledger is unreachable\n\n\n============================= LOGGING INITIALIZED ==============================\n")
+
     testbase.assert_equal(
-        (with_error, silent, long_line, succeeded, merged),
+        (with_error, silent, long_line, succeeded, merged, engine),
         (
             "RPA job exited with code 3: ValueError: the packet asked to fail",
             "RPA job exited with code 3.",
             "RPA job exited with code 3: " + "x" * 199 + "\u2026",
             "RPA job completed with exit code 0.",
             "RPA job exited with code 3: the packet asked to fail",
+            "RPA job exited with code 3: the ledger is unreachable",
         ),
     )
     return

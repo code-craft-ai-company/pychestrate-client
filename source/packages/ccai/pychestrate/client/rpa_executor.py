@@ -780,8 +780,9 @@ def run_streaming(*, command: List[str], cwd: str, env: Dict[str, str],
 
 def _last_line_of(path: str, limit: int = 200) -> str:
     """
-        The last non-empty line of a text file (read from its last 4 KB) that is not a progress marker, cut to ``limit``
-        characters; "" when the file is missing or has no such line.
+        The last non-empty line of a text file (read from its last 4 KB) that is not a progress marker or a banner
+        ("=== LOGGING INITIALIZED ===", which the taskplus engine prints last), cut to ``limit`` characters; "" when the
+        file is missing or has no such line.
     """
     try:
         with open(path, "rb") as handle:
@@ -791,7 +792,10 @@ def _last_line_of(path: str, limit: int = 200) -> str:
             tail = handle.read().decode("utf-8", errors="replace")
     except OSError:
         return ""
-    lines = [line.strip() for line in tail.splitlines() if len(line.strip()) > 0 and not line.strip().startswith("PYC-PROGRESS")]
+    def _is_noise(line: str) -> bool:
+        return line.startswith("PYC-PROGRESS") or (line.startswith("===") and line.endswith("==="))
+
+    lines = [line.strip() for line in tail.splitlines() if len(line.strip()) > 0 and not _is_noise(line.strip())]
     if len(lines) == 0:
         return ""
     rtnval = lines[-1] if len(lines[-1]) <= limit else lines[-1][: limit - 1] + "\u2026"
