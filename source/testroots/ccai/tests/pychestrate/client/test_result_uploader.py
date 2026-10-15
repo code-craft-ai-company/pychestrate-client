@@ -246,6 +246,25 @@ def test_walk_result_tree_enumerates_files_with_digests():
     return
 
 
+def test_walk_result_tree_leaves_out_python_bytecode():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+        os.makedirs(os.path.join(result_dir, "__pycache__"))
+        for name in (os.path.join("__pycache__", "testrun_sequence.cpython-312.pyc"), "loose.pyc"):
+            with open(os.path.join(result_dir, name), "wb") as handle:
+                handle.write(b"\x00\x01")
+        with open(os.path.join(result_dir, "testrun_sequence.py"), "w", encoding="utf-8") as handle:
+            handle.write("# generated\n")
+
+        relative_paths = [entry.relative_path for entry in walk_result_tree(result_dir=result_dir)]
+
+        testbase.assert_equal(
+            ("testrun_sequence.py" in relative_paths, [path for path in relative_paths if path.endswith(".pyc") or "__pycache__" in path], len(relative_paths)),
+            (True, [], 7),
+        )
+    return
+
+
 def test_build_result_manifest_carries_counts_and_paths():
     with tempfile.TemporaryDirectory() as tmpdir:
         result_dir = _write_result_tree(os.path.join(tmpdir, "output"))

@@ -325,7 +325,8 @@ def walk_result_tree(result_dir: str) -> List[ResultTreeEntry]:
 
         Paths are normalized to forward-slash form so they are portable
         across pod operating systems. A result directory that does not exist
-        yields an empty list rather than an error.
+        yields an empty list rather than an error. Python bytecode (``__pycache__``
+        directories and ``.pyc`` files) is not a result and is left out.
 
         :param result_dir: The absolute path of the testbase result-tree
                             root directory.
@@ -342,8 +343,13 @@ def walk_result_tree(result_dir: str) -> List[ResultTreeEntry]:
         )
         return rtnval
 
-    for current_dir, _subdirs, filenames in os.walk(result_dir):
+    for current_dir, subdirs, filenames in os.walk(result_dir):
+        # testbase leaves Python bytecode of its generated run sequence in the output directory; it is an artifact of the interpreter, not a result,
+        # and listed beside the real files it only confuses the run page.
+        subdirs[:] = [name for name in subdirs if name != "__pycache__"]
         for filename in filenames:
+            if filename.endswith(".pyc"):
+                continue
             absolute_path = os.path.join(current_dir, filename)
             if not os.path.isfile(absolute_path):
                 continue
