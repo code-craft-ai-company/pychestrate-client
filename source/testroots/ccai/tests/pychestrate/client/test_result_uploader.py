@@ -561,3 +561,27 @@ def test_upload_run_results_sends_the_failure_detail_as_manifest_notes():
         _, manifest = client.results.manifests[0]
         testbase.assert_equal(manifest.notes, "testbase run exited with code 2.")
     return
+
+
+def test_a_cancelled_rpa_job_is_reported_as_cancelled_not_failed():
+    """
+        The manifest of a cancelled RPA job said "failure" (the uploader knew only succeeded or not), so the service recorded the run as
+        failed beside a cancelled job. The RPA upload reports "cancelled" when the executor's status is cancelled; a timeout and a plain
+        failure stay failures, and a success stays one.
+    """
+    def _outcome(*, succeeded: bool, rpa_status: str) -> object:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_state(os.path.join(tmpdir, "state"))
+            result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+            client = _FakeRestClient()
+            upload_rpa_results(
+                client=client, state=state, envelope=_sample_envelope(), result_dir=result_dir, run_succeeded=succeeded, exit_code=-15 if not succeeded else 0,
+                execution_mode="process", rpa_status=rpa_status, aspects=ResultUploaderAspects(store_driver=_RecordingStoreDriver()),
+            )
+            return client.results.manifests[0][1].terminal_outcome
+
+    testbase.assert_equal(
+        (_outcome(succeeded=False, rpa_status="cancelled"), _outcome(succeeded=False, rpa_status="timeout"), _outcome(succeeded=False, rpa_status="failed"), _outcome(succeeded=True, rpa_status="succeeded")),
+        ("cancelled", "failure", "failure", "success"),
+    )
+    return

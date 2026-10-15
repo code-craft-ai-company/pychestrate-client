@@ -1595,6 +1595,10 @@ def upload_rpa_results(*, client: PychestrateMtlsClient, state: ClientState,
 
     if run_succeeded:
         terminal_outcome = TERMINAL_OUTCOME_SUCCESS
+    elif rpa_status == "cancelled":
+        # An operator cancel is not a failure (the test, build and provisioning uploads say so too): the run page, the dashboard's
+        # "needs attention" list and the failed-run notification all follow this outcome.
+        terminal_outcome = TERMINAL_OUTCOME_CANCELLED
     else:
         terminal_outcome = TERMINAL_OUTCOME_FAILURE
 
