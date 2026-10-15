@@ -271,11 +271,13 @@ Then start it and follow its log:
    sudo systemctl enable --now pychestrate-client
    journalctl -u pychestrate-client -f
 
-The client logs a warning at start that the REST client has no
-``agents_put_client_capabilities`` operation. Until the REST client package
-is regenerated, the pod cannot advertise its capabilities. A job that
-requires capability tags then finds no eligible pod and is refused; a job that
-requires none is not affected.
+At start the client tells the service what it can do (its ``rpa`` capability:
+the job types, the taskplus version and the tags in its ``config.json``), and
+the log says so ("advertised 1 capability kind(s)"). The published REST client
+package does not have the operation for it, so the client makes that call itself
+(the log notes "advertising through a direct call"); the Clients page then lists
+the capability. A job that requires capability tags is only given to a pod that
+advertised them; a job that requires none is not affected.
 
 
 Upgrade

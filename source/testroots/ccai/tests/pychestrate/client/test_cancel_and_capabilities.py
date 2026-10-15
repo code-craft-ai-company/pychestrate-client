@@ -158,3 +158,39 @@ def test_build_rpa_capability_reads_config_and_advertises():
 
     testbase.assert_true(not cap_mod.advertise_capabilities(client=_OldClient(), client_id="c-1", advertisements=[advertisement]))
     return
+
+
+def test_a_rest_client_without_the_operation_advertises_through_a_direct_call():
+    """
+        The published REST client package has no ``agents_put_client_capabilities``, so the
+        pod advertised nothing (its capabilities and runtime version showed empty on the Clients
+        page). It now makes the same ``PUT /clients/{id}/capabilities`` through ``perform_call``.
+    """
+    advertisement = {"kind": "rpa", "value": {"job_types": ["invoice-import@1.0.0"], "taskplus": None, "tags": []}}
+
+    class _Calls:
+        def __init__(self):
+            self.calls = []
+
+        def perform_call(self, **kwargs):
+            self.calls.append(kwargs)
+            return None
+
+    class _Refused(_Calls):
+        def perform_call(self, **kwargs):
+            raise RuntimeError("403 forbidden")
+
+    class _NoCalls:
+        pass
+
+    client = _Calls()
+    ok = cap_mod.advertise_capabilities(client=client, client_id="c-9", advertisements=[advertisement])
+    refused = cap_mod.advertise_capabilities(client=_Refused(), client_id="c-9", advertisements=[advertisement])
+    cannot = cap_mod.advertise_capabilities(client=_NoCalls(), client_id="c-9", advertisements=[advertisement])
+
+    call = client.calls[0] if len(client.calls) == 1 else {}
+    testbase.assert_equal(
+        (ok, refused, cannot, call.get("leaf"), call.get("method"), call.get("body"), call.get("exp_status")),
+        (True, False, False, "/clients/c-9/capabilities", "PUT", {"advertisements": [advertisement]}, 200),
+    )
+    return

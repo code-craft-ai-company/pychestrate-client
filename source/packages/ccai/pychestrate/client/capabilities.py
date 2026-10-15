@@ -93,11 +93,30 @@ def build_rpa_capability(*, state: ClientState, taskplus_version: Optional[str])
     return rtnval
 
 
+def _put_capabilities_directly(*, client: Any, client_id: str, body: Dict[str, Any]) -> bool:
+    """
+        Send the advertisement with the client's own ``perform_call``, the call the generated
+        operation makes, when the pinned REST client package predates that operation (the
+        published 1.0.1 does). Same mutual-TLS session, same path (``PUT
+        /clients/{client_id}/capabilities``), same body. Returns False when this client cannot
+        make a call that way either.
+    """
+    perform_call = getattr(client, "perform_call", None)
+    if not callable(perform_call):
+        return False
+    perform_call(
+        leaf="/clients/{}/capabilities".format(client_id), method="PUT", params=None, body=body,
+        exp_status=200, aspects=None,
+    )
+    return True
+
+
 def advertise_capabilities(*, client: Any, client_id: str,
                            advertisements: List[Dict[str, Any]]) -> bool:
     """
         Send ``advertisements`` through the generated
-        ``agents.agents_put_client_capabilities`` operation.
+        ``agents.agents_put_client_capabilities`` operation, or, when the pinned REST
+        client does not have it, through the client's own call to the same endpoint.
 
         :returns: True when the service accepted the advertisement.
     """
@@ -106,12 +125,18 @@ def advertise_capabilities(*, client: Any, client_id: str,
         group = getattr(client, "agents", None)
         method = getattr(group, "agents_put_client_capabilities", None) if group is not None else None
         if method is None:
-            logger.warning(
+            logger.info(
                 "pychestrate-client: the REST client has no agents_put_client_capabilities operation;"
-                " regenerate it from the current OpenAPI document to advertise capabilities.",
+                " advertising through a direct call to PUT /clients/%s/capabilities.", client_id,
             )
-            return False
-        method(client_id=client_id, body=body)
+            if _put_capabilities_directly(client=client, client_id=client_id, body=body) is False:
+                logger.warning(
+                    "pychestrate-client: the REST client can make neither the generated nor a direct"
+                    " capabilities call; capabilities are not advertised.",
+                )
+                return False
+        else:
+            method(client_id=client_id, body=body)
     except ValueError:
         # An empty-body success decodes as ValueError in the generated client.
         return True
