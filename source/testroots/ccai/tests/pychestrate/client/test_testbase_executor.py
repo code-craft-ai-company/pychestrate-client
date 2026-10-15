@@ -4,6 +4,7 @@
     performed.
 """
 
+import json
 import os
 import tempfile
 
@@ -14,6 +15,7 @@ from ccai.errors.exceptions import BadParameterError
 from ccai.pychestrate.client.state import ClientState
 from ccai.pychestrate.client.cancellable_run import RunCancelled
 from ccai.pychestrate.client.testbase_executor import (
+    describe_failed_run,
     RUN_STATUS_CANCELLED,
     RUN_STATUS_FAILED,
     RUN_STATUS_SUCCEEDED,
@@ -228,4 +230,59 @@ def test_execute_job_envelope_records_a_cancelled_run():
     testbase.assert_equal(outcome.status, RUN_STATUS_CANCELLED)
     testbase.assert_true(outcome.cancelled)
     testbase.assert_false(outcome.succeeded)
+    return
+
+
+def _summary(directory, **detail):
+    with open(os.path.join(directory, "testrun_summary.json"), "w", encoding="utf-8") as handle:
+        json.dump({"result": "FAILED", "detail": detail}, handle)
+    return
+
+
+def test_a_failed_run_is_described_by_what_failed_not_by_an_exit_code():
+    """
+        testbase exits non-zero when a test fails; the reason names the counts from its own summary, and falls back to the exit code only when it has none.
+    """
+    with tempfile.TemporaryDirectory() as empty, tempfile.TemporaryDirectory() as one, tempfile.TemporaryDirectory() as errs, tempfile.TemporaryDirectory() as both, \
+            tempfile.TemporaryDirectory() as clean, tempfile.TemporaryDirectory() as broken, tempfile.TemporaryDirectory() as single:
+        _summary(one, errors=0, failed=1, skipped=0, passed=1, total=2)
+        _summary(errs, errors=2, failed=0, skipped=0, passed=3, total=5)
+        _summary(both, errors=1, failed=2, skipped=0, passed=2, total=5)
+        _summary(clean, errors=0, failed=0, skipped=0, passed=2, total=2)
+        _summary(single, errors=0, failed=1, skipped=0, passed=0, total=1)
+        with open(os.path.join(broken, "testrun_summary.json"), "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        answers = [
+            describe_failed_run(one, 255), describe_failed_run(errs, 255), describe_failed_run(both, 255), describe_failed_run(single, 255),
+            describe_failed_run(clean, 255), describe_failed_run(broken, 255), describe_failed_run(empty, 255), describe_failed_run(os.path.join(empty, "missing"), 7),
+        ]
+
+    testbase.assert_equal(
+        answers,
+        [
+            "1 of 2 tests failed.", "2 of 5 tests errored.", "3 of 5 tests did not pass (2 failed, 1 errored).", "1 of 1 test failed.",
+            "testbase run exited with code 255.", "testbase run exited with code 255.", "testbase run exited with code 255.", "testbase run exited with code 7.",
+        ],
+    )
+    return
+
+
+def test_the_executor_records_the_failure_reason_from_testbases_summary():
+    """
+        A run whose testbase exits non-zero with a summary in the output directory records the described reason as the outcome's detail.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+        state.ensure_dir()
+        envelope = _sample_envelope()
+
+        def run_and_write_summary(command, **kwargs):
+            output = os.path.join(state.runs_dir, str(envelope.get("run_id", "")), "output")
+            os.makedirs(output, exist_ok=True)
+            _summary(output, errors=0, failed=1, skipped=0, passed=1, total=2)
+            return _FakeCompleted(255)
+
+        outcome = execute_job_envelope(state=state, envelope=envelope, local_run_id="local-9", aspects=TestbaseExecutorAspects(run_func=run_and_write_summary))
+
+        testbase.assert_equal((outcome.status, outcome.exit_code, outcome.detail), (RUN_STATUS_FAILED, 255, "1 of 2 tests failed."))
     return

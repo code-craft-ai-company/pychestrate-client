@@ -381,6 +381,39 @@ def build_testbase_command(*, envelope: Dict[str, Any], output_dir: str,
     return rtnval
 
 
+def describe_failed_run(output_dir: str, exit_code: Optional[int]) -> str:
+    """
+        Say why a testbase run that exited non-zero failed, for the reason the service shows beside the run and puts in its notifications.
+
+        testbase exits non-zero when a test fails, so "exited with code 255" says nothing a person can act on and reads like a crash. When testbase's own summary
+        (``testrun_summary.json`` in the output directory) has the counts, the reason names them ("1 of 2 tests failed."). Only when it has none, or counts no
+        failure (a crash before the tests ran), does the reason fall back to the exit code.
+
+        :param output_dir: The run's testbase output directory.
+        :param exit_code: What testbase exited with.
+
+        :returns: One sentence.
+    """
+    fallback = "testbase run exited with code {}.".format(exit_code)
+    try:
+        with open(os.path.join(output_dir, "testrun_summary.json"), "r", encoding="utf-8") as handle:
+            counts = json.load(handle).get("detail", None)
+        failed = int(counts.get("failed", 0))
+        errored = int(counts.get("errors", 0))
+        total = int(counts.get("total", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return fallback
+    bad = failed + errored
+    if bad <= 0 or total <= 0:
+        return fallback
+    noun = "test" if total == 1 else "tests"
+    if errored == 0:
+        return "{} of {} {} failed.".format(failed, total, noun)
+    if failed == 0:
+        return "{} of {} {} errored.".format(errored, total, noun)
+    return "{} of {} {} did not pass ({} failed, {} errored).".format(bad, total, noun, failed, errored)
+
+
 def resolve_run_output_dir(state: ClientState, run_id: str) -> str:
     """
         Builds and creates the per-run output directory under the client
@@ -525,7 +558,7 @@ def execute_job_envelope(*, state: ClientState, envelope: Dict[str, Any],
             detail = "testbase run completed with exit code 0."
         else:
             status = RUN_STATUS_FAILED
-            detail = "testbase run exited with code {}.".format(exit_code)
+            detail = describe_failed_run(output_dir, exit_code)
     except RunCancelled as cancelled_err:
         status = RUN_STATUS_CANCELLED
         exit_code = cancelled_err.returncode
