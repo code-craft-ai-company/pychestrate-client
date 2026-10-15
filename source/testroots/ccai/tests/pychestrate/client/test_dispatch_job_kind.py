@@ -32,6 +32,7 @@ from ccai.pychestrate.client.provision_executor import (
     ProvisionRunOutcome,
 )
 from ccai.pychestrate.client.rpa_executor import (
+    RPA_STATUS_FAILED,
     RPA_STATUS_SUCCEEDED,
     RpaRunOutcome,
 )
@@ -182,6 +183,7 @@ class _Routing:
         self.provision_uploads = 0
         self.rpa_runs = 0
         self.rpa_uploads = 0
+        self.rpa_notes = "never uploaded"
         return
 
 
@@ -255,17 +257,20 @@ def _install_fakes(routing):
     def _fake_rpa_execute(*, state, envelope, local_run_id, aspects,
                           progress_reporter=None):
         routing.rpa_runs += 1
+        failing = envelope.get("params", {}).get("work_packet", {}).get("fail") is True
         rtnval = RpaRunOutcome(
-            status=RPA_STATUS_SUCCEEDED, exit_code=0,
+            status=RPA_STATUS_FAILED if failing else RPA_STATUS_SUCCEEDED, exit_code=3 if failing else 0,
             output_dir="/tmp/rpa-out", work_dir="/tmp/rpa-work",
             command=["python", "-m", "jobs.invoice"], execution_mode="process",
-            type_id="invoice-import", version="1.0.0", detail="ok")
+            type_id="invoice-import", version="1.0.0",
+            detail="RPA job exited with code 3: boom" if failing else "ok")
         return rtnval
 
     def _fake_rpa_upload(*, client, state, envelope, result_dir,
                          run_succeeded, aspects, exit_code=None,
-                         execution_mode=None, rpa_status=None):
+                         execution_mode=None, rpa_status=None, run_notes=None):
         routing.rpa_uploads += 1
+        routing.rpa_notes = run_notes
         rtnval = ResultUploadOutcome(
             status=UPLOAD_STATUS_COMPLETE, manifest_posted=True,
             tree_uploaded=True, file_count=2, detail="ok")
@@ -482,4 +487,32 @@ def test_unknown_job_kind_defaults_to_test():
             testbase.assert_equal(routing.build_runs, 0)
     finally:
         _restore_fakes(originals)
+    return
+
+
+def test_a_failed_rpa_job_sends_its_failure_detail_as_the_result_notes():
+    """
+        The service records the notes as the job's reason, so "rpa result manifest: outcome=failure" said nothing; the
+        handler now passes the executor's failure detail to the upload, and a job that succeeded sends none.
+    """
+    def _notes(work_packet) -> object:
+        signing_key = Ed25519PrivateKey.generate()
+        envelope = _base_envelope()
+        envelope["job_kind"] = "rpa"
+        envelope["params"] = {
+            "type_id": "invoice-import", "version": "1.0.0", "execution_mode": "process",
+            "entrypoint": {"command": ["python", "-m", "jobs.invoice"]}, "work_packet": work_packet,
+        }
+        pending = _signed_pending(envelope, signing_key)
+        routing = _Routing()
+        originals = _install_fakes(routing)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                state = _make_enrolled_state(os.path.join(tmpdir, "state"), signing_key)
+                handle_one_dispatch(client=_FakeRestClient(), state=state, pending=pending, aspects=DispatchConsumerAspects())
+        finally:
+            _restore_fakes(originals)
+        return routing.rpa_notes
+
+    testbase.assert_equal((_notes({"fail": True}), _notes({"customer_id": 42})), ("RPA job exited with code 3: boom", None))
     return

@@ -778,6 +778,26 @@ def run_streaming(*, command: List[str], cwd: str, env: Dict[str, str],
     return rtnval
 
 
+def _last_line_of(path: str, limit: int = 200) -> str:
+    """
+        The last non-empty line of a text file (read from its last 4 KB), cut to ``limit`` characters; "" when the
+        file is missing or empty.
+    """
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 4096))
+            tail = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = [line.strip() for line in tail.splitlines() if len(line.strip()) > 0]
+    if len(lines) == 0:
+        return ""
+    rtnval = lines[-1] if len(lines[-1]) <= limit else lines[-1][: limit - 1] + "\u2026"
+    return rtnval
+
+
 def _capture_process_output(*, output_dir: str, completed: Optional[Any],
                             command: List[str], exit_code: Optional[int],
                             detail: Optional[str], execution_mode: str) -> None:
@@ -1028,6 +1048,12 @@ def execute_rpa_envelope(*, state: ClientState, envelope: Dict[str, Any],
     _capture_process_output(
         output_dir=output_dir, completed=completed, command=command, exit_code=exit_code,
         detail=detail, execution_mode=execution_mode)
+
+    # "exited with code 3" says little; the job's own last line of error output says why.
+    if status == RPA_STATUS_FAILED and isinstance(exit_code, int) and exit_code != 0:
+        last_error = _last_line_of(os.path.join(output_dir, "stderr.log"))
+        if len(last_error) > 0:
+            detail = "RPA job exited with code {}: {}".format(exit_code, last_error)
 
     outcome = RpaRunOutcome(
         status=status, exit_code=exit_code, output_dir=output_dir, work_dir=cwd,

@@ -767,6 +767,7 @@ def _handle_rpa_job(*, client: PychestrateMtlsClient, state: ClientState,
         exit_code=outcome.exit_code,
         execution_mode=outcome.execution_mode,
         rpa_status=outcome.status,
+        run_notes=None if outcome.succeeded else outcome.detail,
         aspects=aspects.result_uploader_aspects,
     )
 

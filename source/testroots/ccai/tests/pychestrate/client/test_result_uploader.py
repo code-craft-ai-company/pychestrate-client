@@ -23,6 +23,7 @@ from ccai.pychestrate.client.result_uploader import (
     build_result_manifest,
     run_needs_upload_retry,
     upload_result_tree,
+    upload_rpa_results,
     upload_run_results,
     walk_result_tree,
 )
@@ -420,6 +421,31 @@ def test_upload_run_results_complete_path_posts_manifest():
         # The local run record is NOT marked for retry on success.
         testbase.assert_false(run_needs_upload_retry(state=state,
                                                      run_id=RUN_ID))
+    return
+
+
+def test_an_rpa_failure_is_explained_in_the_manifest_notes():
+    """
+        The service records the manifest's notes as the job's reason; the RPA upload sent none, so it read "rpa result
+        manifest: outcome=failure" whatever went wrong. The failure detail now travels as the notes, and a job that
+        succeeded sends none.
+    """
+    def _notes(*, succeeded: bool, run_notes) -> object:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = _make_state(os.path.join(tmpdir, "state"))
+            result_dir = _write_result_tree(os.path.join(tmpdir, "output"))
+            client = _FakeRestClient()
+            upload_rpa_results(
+                client=client, state=state, envelope=_sample_envelope(), result_dir=result_dir, run_succeeded=succeeded, exit_code=3 if not succeeded else 0,
+                execution_mode="process", rpa_status="failed" if not succeeded else "succeeded", run_notes=run_notes,
+                aspects=ResultUploaderAspects(store_driver=_RecordingStoreDriver()),
+            )
+            return client.results.manifests[0][1].notes
+
+    testbase.assert_equal(
+        (_notes(succeeded=False, run_notes="RPA job exited with code 3: boom"), _notes(succeeded=False, run_notes=None), _notes(succeeded=True, run_notes=None)),
+        ("RPA job exited with code 3: boom", None, None),
+    )
     return
 
 

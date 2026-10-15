@@ -83,7 +83,8 @@ class _RunRecorder:
         head (``git`` vs everything else).
     """
 
-    def __init__(self, *, job_returncode=0, raise_for=None, timeout_for=None):
+    def __init__(self, *, job_returncode=0, raise_for=None, timeout_for=None, job_stderr=b""):
+        self._job_stderr = job_stderr
         self._job_returncode = job_returncode
         self._raise_for = raise_for
         self._timeout_for = timeout_for
@@ -102,7 +103,7 @@ class _RunRecorder:
             rtnval = _CompletedStub(returncode=0)
             return rtnval
         rtnval = _CompletedStub(
-            returncode=self._job_returncode, stdout=b"job output", stderr=b"")
+            returncode=self._job_returncode, stdout=b"job output", stderr=self._job_stderr)
         return rtnval
 
 
@@ -213,6 +214,39 @@ def test_execute_process_job_local_source_and_failure_exit_code():
         # No git calls for a local source; the job ran inside it.
         testbase.assert_equal(len(recorder.calls), 1)
         testbase.assert_equal(recorder.calls[0]["kwargs"]["cwd"], local_source)
+    return
+
+
+def test_a_failed_job_says_why_from_the_last_line_of_its_error_output():
+    """
+        "RPA job exited with code 3." says little (the service records it as the job's reason); the job's own last line of
+        error output is added, cut to 200 characters, and a job that wrote nothing keeps the plain text.
+    """
+    def _detail(stderr: bytes, returncode: int = 3) -> str:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            local_source = os.path.join(tmpdir, "jobs")
+            os.makedirs(local_source)
+            state = ClientState(state_dir=os.path.join(tmpdir, "state"))
+            state.ensure_dir()
+            aspects = RpaExecutorAspects(run_func=_RunRecorder(job_returncode=returncode, job_stderr=stderr))
+            outcome = execute_rpa_envelope(
+                state=state, envelope=_sample_rpa_envelope(source_kind="local", source_ref=local_source), local_run_id="local", aspects=aspects)
+            return outcome.detail
+
+    with_error = _detail(b"starting\nTraceback...\nValueError: the packet asked to fail\n\n")
+    silent = _detail(b"")
+    long_line = _detail(b"x" * 500)
+    succeeded = _detail(b"warning: something", returncode=0)
+
+    testbase.assert_equal(
+        (with_error, silent, long_line, succeeded),
+        (
+            "RPA job exited with code 3: ValueError: the packet asked to fail",
+            "RPA job exited with code 3.",
+            "RPA job exited with code 3: " + "x" * 199 + "\u2026",
+            "RPA job completed with exit code 0.",
+        ),
+    )
     return
 
 

@@ -1573,6 +1573,7 @@ def upload_rpa_results(*, client: PychestrateMtlsClient, state: ClientState,
                        exit_code: Optional[int] = None,
                        execution_mode: Optional[str] = None,
                        rpa_status: Optional[str] = None,
+                       run_notes: Optional[str] = None,
                        aspects: ResultUploaderAspects =
                        DEFAULT_RESULT_UPLOADER_ASPECTS
                        ) -> ResultUploadOutcome:
@@ -1608,10 +1609,11 @@ def upload_rpa_results(*, client: PychestrateMtlsClient, state: ClientState,
         backend_key_prefix=backend_key_prefix,
         store_driver=store_driver)
 
-    notes = None
+    notes = run_notes if run_notes else None
     if not tree_uploaded:
-        notes = ("RPA result-tree byte transfer incomplete; manifest posted "
-                 "for reconciliation. See client-side RPA record.")
+        upload_note = ("RPA result-tree byte transfer incomplete; manifest posted "
+                       "for reconciliation. See client-side RPA record.")
+        notes = upload_note if notes is None else "{} {}".format(notes, upload_note)
 
     manifest = build_rpa_result_manifest(
         run_id=run_id, client_id=client_id, terminal_outcome=terminal_outcome,
