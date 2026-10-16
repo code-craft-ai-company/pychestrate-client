@@ -214,3 +214,29 @@ def test_server_trust_bundle_holds_public_roots_and_the_service_chain():
     testbase.assert_true(service_chain in bundle)
     testbase.assert_true(first_public_root in bundle)
     return
+
+
+def test_every_call_carries_the_client_version_header():
+    """
+    **Feature: client runtime version (E2E-18)**
+    **Property: the session the client authenticates with sends ``X-Pychestrate-Client-Version`` with the client's own version on every call, beside its client certificate, so the
+    service's heartbeat can record it and the Clients page can show a runtime version.**
+    """
+    from ccai.testbase.mocking import create_module_patch
+
+    from ccai.pychestrate.client import VERSION, pychestratemtlsclient
+
+    patch = create_module_patch(pychestratemtlsclient, "build_server_trust_bundle")
+    mock = patch.activate()
+    mock.configure(side_effect=lambda **kwargs: "/nonexistent/bundle.pem")
+    try:
+        client = _make_client()
+        client.authenticate()
+        session = client._session
+    finally:
+        patch.deactivate()
+    testbase.assert_equal(
+        (session.headers.get("X-Pychestrate-Client-Version"), session.cert, pychestratemtlsclient.CLIENT_VERSION_HEADER),
+        (VERSION, ("/nonexistent/cert.pem", "/nonexistent/key.pem"), "X-Pychestrate-Client-Version"),
+    )
+    return

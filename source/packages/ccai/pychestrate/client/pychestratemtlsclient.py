@@ -22,6 +22,7 @@ import certifi
 
 from requests import Session
 
+from ccai.pychestrate.client import VERSION
 from ccai.pychestrate.client.mtlsclientcredential import MtlsClientCredential
 from ccai.pychestrate.rest.client.pychestraterestclient import PychestrateRestClient
 from ccai.restclient.base.aspectsrest import AspectsRest, DEFAULT_REST_ASPECTS
@@ -89,6 +90,10 @@ def normalize_base_path(base_path: Optional[str]) -> str:
     else:
         rtnval = "/" + base_path.strip("/ ")
     return rtnval
+
+
+#: The header that carries the client's version on every call.
+CLIENT_VERSION_HEADER = "X-Pychestrate-Client-Version"
 
 
 class PychestrateMtlsClient(PychestrateRestClient):
@@ -177,6 +182,8 @@ class PychestrateMtlsClient(PychestrateRestClient):
         credential: MtlsClientCredential = self._credential
 
         session = Session()
+        # Every call tells the service which client version this is; its heartbeat records it, and the Clients page shows it as the runtime version.
+        session.headers[CLIENT_VERSION_HEADER] = VERSION
         session.cert = (credential.client_cert_path, credential.client_key_path)
         trust_bundle_path = build_server_trust_bundle(
             service_ca_path=credential.service_ca_path)
