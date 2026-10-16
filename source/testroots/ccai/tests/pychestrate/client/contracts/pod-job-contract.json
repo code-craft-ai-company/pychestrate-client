@@ -1,6 +1,6 @@
 {
   "contract_version": 1,
-  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ. build_envelope_params does the same for builds: the params and source block the service's build trigger puts in the envelope, and what the pod derives from them (runner kind, make targets, environment, where the source comes from). rpa_envelope_params does the same for RPA jobs: the params and git source block the RPA trigger puts in the envelope, and what the pod derives (job identity, execution mode, environment, timeout, work packet, the process command or the tasker workflow or tasking, and where the code comes from).",
+  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ. build_envelope_params does the same for builds: the params and source block the service's build trigger puts in the envelope, and what the pod derives from them (runner kind, make targets, environment, where the source comes from). rpa_envelope_params does the same for RPA jobs: the params and git source block the RPA trigger puts in the envelope, and what the pod derives (job identity, execution mode, environment, timeout, work packet, the process command or the tasker workflow or tasking, and where the code comes from). provision_envelope_params does the same for provisioning (terraform): the params the infra trigger puts in the envelope, which the service's driver accepts, and the terraform command, working directory and environment overlay the pod builds from them.",
   "progress_format_tag": "testbase-v1",
   "test_run_envelope_params": [
     {
@@ -809,6 +809,131 @@
         "source": {
           "mode": "local",
           "path": "/opt/flows"
+        }
+      }
+    }
+  ],
+  "provision_envelope_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "provision_envelope_params": [
+    {
+      "name": "a plan in a working directory",
+      "trigger": {
+        "environment_id": "env-1",
+        "driver_name": "terraform",
+        "action": "plan",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web"
+        }
+      },
+      "params": {
+        "environment_id": "env-1",
+        "action": "plan",
+        "driver_name": "terraform",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web"
+        },
+        "inputs_canonical_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "pod": {
+        "driver_name": "terraform",
+        "action": "plan",
+        "command": [
+          "terraform",
+          "plan",
+          "-input=false"
+        ],
+        "working_dir": "/srv/infra/web",
+        "env": {}
+      }
+    },
+    {
+      "name": "an apply with a var file, parallelism and a backend",
+      "trigger": {
+        "environment_id": "env-1",
+        "driver_name": "terraform",
+        "action": "apply",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web",
+          "var_file": "prod.tfvars",
+          "parallelism": 4,
+          "backend_config": {
+            "bucket": "state-bucket",
+            "key": "web.tfstate"
+          }
+        }
+      },
+      "params": {
+        "environment_id": "env-1",
+        "action": "apply",
+        "driver_name": "terraform",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web",
+          "var_file": "prod.tfvars",
+          "parallelism": 4,
+          "backend_config": {
+            "bucket": "state-bucket",
+            "key": "web.tfstate"
+          }
+        },
+        "inputs_canonical_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "pod": {
+        "driver_name": "terraform",
+        "action": "apply",
+        "command": [
+          "terraform",
+          "apply",
+          "-auto-approve",
+          "-input=false",
+          "-var-file=prod.tfvars",
+          "-parallelism=4",
+          "-backend-config=bucket=state-bucket",
+          "-backend-config=key=web.tfstate"
+        ],
+        "working_dir": "/srv/infra/web",
+        "env": {}
+      }
+    },
+    {
+      "name": "a destroy with an environment overlay",
+      "trigger": {
+        "environment_id": "env-1",
+        "driver_name": "terraform",
+        "action": "destroy",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web",
+          "env": {
+            "AWS_REGION": "eu-west-1",
+            "TF_LOG": "WARN"
+          }
+        }
+      },
+      "params": {
+        "environment_id": "env-1",
+        "action": "destroy",
+        "driver_name": "terraform",
+        "driver_inputs": {
+          "working_directory": "/srv/infra/web",
+          "env": {
+            "AWS_REGION": "eu-west-1",
+            "TF_LOG": "WARN"
+          }
+        },
+        "inputs_canonical_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "pod": {
+        "driver_name": "terraform",
+        "action": "destroy",
+        "command": [
+          "terraform",
+          "destroy",
+          "-auto-approve",
+          "-input=false"
+        ],
+        "working_dir": "/srv/infra/web",
+        "env": {
+          "AWS_REGION": "eu-west-1",
+          "TF_LOG": "WARN"
         }
       }
     }

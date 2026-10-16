@@ -36,6 +36,15 @@ from ccai.pychestrate.client.build_executor import (
     _extract_runner_kind,
     plan_source_acquisition,
 )
+from ccai.pychestrate.client.provision_executor import (
+    _extract_action,
+    _extract_driver_inputs,
+    _extract_driver_name,
+    _extract_provision_env,
+    _extract_provision_spec,
+    _resolve_work_dir,
+    build_provision_command,
+)
 from ccai.pychestrate.client.progress_reporter import PROGRESS_FORMAT_TAG
 from ccai.pychestrate.client.rpa_executor import (
     RpaExecutorAspects,
@@ -139,4 +148,31 @@ def test_the_pod_reads_what_the_contract_says_for_every_rpa_job_the_service_send
         expected[case["name"]] = case["pod"]
 
     testbase.assert_equal((len(derived) >= 6, derived), (True, expected))
+    return
+
+
+def test_the_pod_builds_what_the_contract_says_for_every_provisioning_run_the_service_sends():
+    """
+    **Feature: one contract for both sides (E2E-14)**
+    **Property: for each provisioning case in the contract, from the envelope's params exactly as the service sends them the pod derives the contract's driver and action and builds the
+    recorded ``terraform`` command (``-auto-approve`` only for apply and destroy, the var file, the parallelism and the sorted backend config), runs it in the recorded working directory
+    and passes the recorded environment overlay.**
+    """
+    derived: Dict[str, Any] = {}
+    expected: Dict[str, Any] = {}
+    for case in _contract()["provision_envelope_params"]:
+        envelope = {"envelope_id": "env-1", "run_id": "run-1", "job_kind": "provision", "params": case["params"], "refs": {}}
+        spec = _extract_provision_spec(envelope)
+        driver_name = _extract_driver_name(spec)
+        driver_inputs = _extract_driver_inputs(spec)
+        derived[case["name"]] = {
+            "driver_name": driver_name,
+            "action": _extract_action(spec),
+            "command": build_provision_command(envelope=envelope),
+            "working_dir": _resolve_work_dir(driver_name=driver_name, driver_inputs=driver_inputs, fallback_dir="/not/used"),
+            "env": _extract_provision_env(driver_inputs),
+        }
+        expected[case["name"]] = case["pod"]
+
+    testbase.assert_equal((len(derived) >= 3, derived), (True, expected))
     return
