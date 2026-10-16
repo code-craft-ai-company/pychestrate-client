@@ -1,6 +1,6 @@
 {
   "contract_version": 1,
-  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ.",
+  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ. build_envelope_params does the same for builds: the params and source block the service's build trigger puts in the envelope, and what the pod derives from them (runner kind, make targets, environment, where the source comes from).",
   "progress_format_tag": "testbase-v1",
   "test_run_envelope_params": [
     {
@@ -56,6 +56,285 @@
         "--includes=ccai.tests.b",
         "--includes=ccai.tests.c"
       ]
+    }
+  ],
+  "build_envelope_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+  "build_envelope_params": [
+    {
+      "name": "a source integration's repository, two targets and an environment",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all",
+            "docs"
+          ]
+        },
+        "env": {
+          "CC": "gcc"
+        }
+      },
+      "source_ref": {
+        "kind": "git",
+        "url": "https://github.com/acme/widgets.git",
+        "ref": "main",
+        "integration_id": "i-1",
+        "credentials_ref": ""
+      },
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all",
+            "docs"
+          ]
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {
+          "CC": "gcc"
+        },
+        "toolchain": []
+      },
+      "envelope_source": {
+        "kind": "git",
+        "url": "https://github.com/acme/widgets.git",
+        "ref": "main",
+        "integration_id": "i-1",
+        "credentials_ref": ""
+      },
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "all",
+          "docs"
+        ],
+        "env": {
+          "CC": "gcc"
+        },
+        "source": {
+          "mode": "structured",
+          "kind": "git",
+          "url": "https://github.com/acme/widgets.git",
+          "ref": "main",
+          "credentials_ref": ""
+        }
+      }
+    },
+    {
+      "name": "a private repository carries its credentials reference, never a credential",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ]
+        },
+        "env": {}
+      },
+      "source_ref": {
+        "kind": "git",
+        "url": "https://github.com/acme/widgets.git",
+        "ref": "main",
+        "integration_id": "i-1",
+        "credentials_ref": "vault:acme-token"
+      },
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ]
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {},
+        "toolchain": []
+      },
+      "envelope_source": {
+        "kind": "git",
+        "url": "https://github.com/acme/widgets.git",
+        "ref": "main",
+        "integration_id": "i-1",
+        "credentials_ref": "vault:acme-token"
+      },
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "all"
+        ],
+        "env": {},
+        "source": {
+          "mode": "structured",
+          "kind": "git",
+          "url": "https://github.com/acme/widgets.git",
+          "ref": "main",
+          "credentials_ref": "vault:acme-token"
+        }
+      }
+    },
+    {
+      "name": "a repository named in the runner inputs (no source integration)",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "install"
+          ],
+          "git_url": "https://github.com/acme/other.git",
+          "git_ref": "v2"
+        },
+        "env": {}
+      },
+      "source_ref": null,
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "install"
+          ],
+          "git_url": "https://github.com/acme/other.git",
+          "git_ref": "v2"
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {},
+        "toolchain": []
+      },
+      "envelope_source": null,
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "install"
+        ],
+        "env": {},
+        "source": {
+          "mode": "git_url",
+          "url": "https://github.com/acme/other.git",
+          "ref": "v2"
+        }
+      }
+    },
+    {
+      "name": "a repository named in the runner inputs without a ref",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ],
+          "git_url": "https://github.com/acme/other.git"
+        },
+        "env": {}
+      },
+      "source_ref": null,
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ],
+          "git_url": "https://github.com/acme/other.git"
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {},
+        "toolchain": []
+      },
+      "envelope_source": null,
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "all"
+        ],
+        "env": {},
+        "source": {
+          "mode": "git_url",
+          "url": "https://github.com/acme/other.git",
+          "ref": null
+        }
+      }
+    },
+    {
+      "name": "a directory that is already on the pod",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ],
+          "source_dir": "/srv/builds/widgets"
+        },
+        "env": {
+          "MODE": "release"
+        }
+      },
+      "source_ref": null,
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ],
+          "source_dir": "/srv/builds/widgets"
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {
+          "MODE": "release"
+        },
+        "toolchain": []
+      },
+      "envelope_source": null,
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "all"
+        ],
+        "env": {
+          "MODE": "release"
+        },
+        "source": {
+          "mode": "source_dir",
+          "path": "/srv/builds/widgets"
+        }
+      }
+    },
+    {
+      "name": "no source named at all",
+      "trigger": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ]
+        },
+        "env": {}
+      },
+      "source_ref": null,
+      "params": {
+        "runner_kind": "makefile",
+        "runner_inputs": {
+          "targets": [
+            "all"
+          ]
+        },
+        "repro_digest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "input_files": {},
+        "env": {},
+        "toolchain": []
+      },
+      "envelope_source": null,
+      "pod": {
+        "runner_kind": "makefile",
+        "targets": [
+          "all"
+        ],
+        "env": {},
+        "source": {
+          "mode": "none"
+        }
+      }
     }
   ]
 }

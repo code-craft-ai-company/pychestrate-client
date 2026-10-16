@@ -29,6 +29,13 @@ from typing import Any, Dict
 
 from ccai import testbase
 
+from ccai.pychestrate.client.build_executor import (
+    _extract_build_env,
+    _extract_build_spec,
+    _extract_make_targets,
+    _extract_runner_kind,
+    plan_source_acquisition,
+)
 from ccai.pychestrate.client.progress_reporter import PROGRESS_FORMAT_TAG
 from ccai.pychestrate.client.testbase_executor import build_testbase_command
 
@@ -69,4 +76,28 @@ def test_the_pod_reports_progress_under_the_tag_the_service_registers():
     (the service refuses any other with "No progress_parser registered").**
     """
     testbase.assert_equal(PROGRESS_FORMAT_TAG, _contract()["progress_format_tag"])
+    return
+
+
+def test_the_pod_reads_what_the_contract_says_for_every_build_the_service_sends():
+    """
+    **Feature: one contract for both sides (E2E-14)**
+    **Property: for each build case in the contract, from the envelope's params and source block exactly as the service sends them the pod derives the contract's runner kind, make targets
+    and environment, and plans the contract's source acquisition: the structured ``source`` block first (with its credentials reference), else ``git_url`` with its ``git_ref``, else
+    ``source_dir``, else nothing.**
+    """
+    derived: Dict[str, Any] = {}
+    expected: Dict[str, Any] = {}
+    for case in _contract()["build_envelope_params"]:
+        envelope = {"envelope_id": "env-1", "job_type": "build-makefile", "job_kind": "build", "params": case["params"], "source": case["envelope_source"], "refs": {}}
+        build_spec = _extract_build_spec(envelope)
+        derived[case["name"]] = {
+            "runner_kind": _extract_runner_kind(build_spec),
+            "targets": _extract_make_targets(build_spec.get("runner_inputs", {})),
+            "env": _extract_build_env(build_spec),
+            "source": plan_source_acquisition(envelope=envelope, build_spec=build_spec),
+        }
+        expected[case["name"]] = case["pod"]
+
+    testbase.assert_equal((len(derived) >= 5, derived), (True, expected))
     return

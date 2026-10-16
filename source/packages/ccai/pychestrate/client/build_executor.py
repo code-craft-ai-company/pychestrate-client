@@ -563,6 +563,48 @@ def _acquire_structured_source(*, source_ref: Dict[str, Any],
     return rtnval
 
 
+def plan_source_acquisition(*, envelope: Dict[str, Any], build_spec: Dict[str, Any]) -> Dict[str, Any]:
+    """
+        Decides where a build's source comes from, without fetching anything (the decision :func:`acquire_source` then carries out, and the one the
+        service-and-pod contract checks): the envelope's structured ``source`` block first, else ``runner_inputs.git_url`` (with an optional
+        ``git_ref``), else ``runner_inputs.source_dir``, else nothing.
+
+        :param envelope: The verified envelope dict.
+        :param build_spec: The envelope ``params`` build-spec map.
+
+        :returns: ``{"mode": "structured", "kind", "url", "ref", "credentials_ref"}``, ``{"mode": "git_url", "url", "ref"}``,
+                  ``{"mode": "source_dir", "path"}`` or ``{"mode": "none"}``.
+    """
+    runner_inputs = build_spec.get("runner_inputs", {})
+    if not isinstance(runner_inputs, dict):
+        runner_inputs = {}
+
+    source_ref = _extract_source_ref(envelope=envelope)
+    if source_ref is not None:
+        rtnval: Dict[str, Any] = {
+            "mode": "structured",
+            "kind": str(source_ref.get("kind", "")).strip(),
+            "url": str(source_ref.get("url", "")).strip(),
+            "ref": str(source_ref.get("ref", "")).strip(),
+            "credentials_ref": str(source_ref.get("credentials_ref", "")).strip(),
+        }
+        return rtnval
+
+    git_url = runner_inputs.get("git_url", None)
+    if git_url is not None and len(str(git_url)) > 0:
+        git_ref = runner_inputs.get("git_ref", None)
+        rtnval = {"mode": "git_url", "url": str(git_url), "ref": str(git_ref) if git_ref is not None else None}
+        return rtnval
+
+    local_source = runner_inputs.get("source_dir", None)
+    if local_source is not None and len(str(local_source)) > 0:
+        rtnval = {"mode": "source_dir", "path": str(local_source)}
+        return rtnval
+
+    rtnval = {"mode": "none"}
+    return rtnval
+
+
 def acquire_source(*, envelope: Dict[str, Any], build_spec: Dict[str, Any],
                     source_dir: str,
                     aspects: BuildExecutorAspects =
@@ -604,18 +646,18 @@ def acquire_source(*, envelope: Dict[str, Any], build_spec: Dict[str, Any],
 
         :returns: A :class:`SourceAcquisitionResult`.
     """
+    plan = plan_source_acquisition(envelope=envelope, build_spec=build_spec)
     runner_inputs = build_spec.get("runner_inputs", {})
     if not isinstance(runner_inputs, dict):
         runner_inputs = {}
 
-    source_ref = _extract_source_ref(envelope=envelope)
-    if source_ref is not None:
+    if plan["mode"] == "structured":
         rtnval = _acquire_structured_source(
-            source_ref=source_ref, source_dir=source_dir, aspects=aspects)
+            source_ref=_extract_source_ref(envelope=envelope), source_dir=source_dir, aspects=aspects)
         return rtnval
 
     git_url = runner_inputs.get("git_url", None)
-    if git_url is not None and len(str(git_url)) > 0:
+    if plan["mode"] == "git_url":
         logger.info(
             "pychestrate-client: the build envelope carries no structured "
             "'source' block; falling back to the legacy "
@@ -629,7 +671,7 @@ def acquire_source(*, envelope: Dict[str, Any], build_spec: Dict[str, Any],
         return rtnval
 
     local_source = runner_inputs.get("source_dir", None)
-    if local_source is not None and len(str(local_source)) > 0:
+    if plan["mode"] == "source_dir":
         local_path = str(local_source)
         if os.path.isdir(local_path):
             logger.info(
