@@ -454,6 +454,77 @@ def write_work_packet(*, work_dir: str, work_packet: Dict[str, Any]) -> str:
     return rtnval
 
 
+def plan_rpa_source(*, envelope: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+        Decides where a job's code comes from, without fetching anything (the decision :func:`acquire_rpa_source` carries out, and the one
+        the service-and-pod contract checks): ``source.kind`` ``local`` (a directory on the pod), ``package`` (installed on the pod), else
+        git, which needs the envelope's structured ``source`` block.
+
+        :returns: ``{"mode": "local", "path"}``, ``{"mode": "package", "ref"}``, ``{"mode": "git", "url", "ref"}`` or
+                  ``{"mode": "git_without_source_block"}``.
+    """
+    source = _payload_dict(payload, "source")
+    kind = str(source.get("kind", "git") or "git")
+    ref = str(source.get("ref", "") or "")
+    if kind == "local":
+        rtnval: Dict[str, Any] = {"mode": "local", "path": ref}
+        return rtnval
+    if kind == "package":
+        rtnval = {"mode": "package", "ref": ref}
+        return rtnval
+    block = envelope.get("source", None)
+    if block is None or not isinstance(block, dict):
+        rtnval = {"mode": "git_without_source_block"}
+        return rtnval
+    rtnval = {"mode": "git", "url": str(block.get("url", "")).strip(), "ref": str(block.get("ref", "")).strip()}
+    return rtnval
+
+
+def read_rpa_job_identity(payload: Dict[str, Any]) -> Dict[str, str]:
+    """
+        Which job this is, from the envelope's params: the execution mode (``process`` unless the params say otherwise), the job type and its version.
+    """
+    rtnval = {
+        "execution_mode": str(payload.get("execution_mode", EXECUTION_MODE_PROCESS) or EXECUTION_MODE_PROCESS),
+        "type_id": str(payload.get("type_id", "") or ""),
+        "version": str(payload.get("version", "") or ""),
+    }
+    return rtnval
+
+
+def plan_process_entrypoint(entrypoint: Dict[str, Any]) -> Dict[str, Any]:
+    """
+        What a process job runs: its argv, the directory it runs in (relative to the source; ``.`` unless the entrypoint names one) and how the
+        work packet reaches it (``file`` unless the entrypoint says ``stdin`` or ``env``).
+
+        :raises: BadParameterError when ``entrypoint.command`` is missing or empty.
+    """
+    rtnval = {
+        "command": build_process_command(entrypoint=entrypoint),
+        "working_dir": str(entrypoint.get("working_dir", ".") or "."),
+        "packet_delivery": str(entrypoint.get("packet_delivery", PACKET_DELIVERY_FILE) or PACKET_DELIVERY_FILE),
+    }
+    return rtnval
+
+
+def tasker_entrypoint(entrypoint: Dict[str, Any]) -> Dict[str, str]:
+    """
+        What a tasker job runs, from its entrypoint: the workflow file inside the source (which wins) or the ``module@Class`` tasking.
+
+        :returns: ``{"workflow": path}``, ``{"tasking": identity}`` or ``{}``.
+    """
+    workflow = entrypoint.get("workflow", None)
+    if workflow is not None and len(str(workflow)) > 0:
+        rtnval = {"workflow": str(workflow)}
+        return rtnval
+    tasking = entrypoint.get("tasking", None)
+    if tasking is not None and len(str(tasking)) > 0:
+        rtnval = {"tasking": str(tasking)}
+        return rtnval
+    rtnval = {}
+    return rtnval
+
+
 def acquire_rpa_source(*, envelope: Dict[str, Any], payload: Dict[str, Any],
                        source_dir: str, work_dir: str,
                        aspects: RpaExecutorAspects) -> SourceAcquisitionResult:
@@ -469,9 +540,9 @@ def acquire_rpa_source(*, envelope: Dict[str, Any], payload: Dict[str, Any],
 
         :returns: A :class:`SourceAcquisitionResult`.
     """
-    source = _payload_dict(payload, "source")
-    kind = str(source.get("kind", "git") or "git")
-    ref = str(source.get("ref", "") or "")
+    plan = plan_rpa_source(envelope=envelope, payload=payload)
+    kind = plan["mode"]
+    ref = str(plan.get("path", plan.get("ref", "")) or "")
 
     if kind == "local":
         if len(ref) > 0 and os.path.isdir(ref):
@@ -490,7 +561,7 @@ def acquire_rpa_source(*, envelope: Dict[str, Any], payload: Dict[str, Any],
             detail="package source '{}' is expected to be installed on the pod".format(ref))
         return rtnval
 
-    if envelope.get("source", None) is None:
+    if kind == "git_without_source_block":
         rtnval = SourceAcquisitionResult(
             acquired=False, source_dir=source_dir,
             detail="git source declared but the envelope carries no 'source' block")
@@ -552,8 +623,9 @@ def render_taskplus_workflow(*, entrypoint: Dict[str, Any], payload: Dict[str, A
         :raises: BadParameterError on a malformed entrypoint or workflow.
     """
     yaml = _yaml_module()
-    workflow_rel = entrypoint.get("workflow", None)
-    tasking = entrypoint.get("tasking", None)
+    target = tasker_entrypoint(entrypoint)
+    workflow_rel = target.get("workflow", None)
+    tasking = target.get("tasking", None)
 
     document: Dict[str, Any]
     if workflow_rel is not None and len(str(workflow_rel)) > 0:
@@ -878,9 +950,8 @@ def execute_rpa_envelope(*, state: ClientState, envelope: Dict[str, Any],
     source_dir = dirs["source_dir"]
 
     payload = extract_rpa_payload(envelope=envelope)
-    execution_mode = str(payload.get("execution_mode", EXECUTION_MODE_PROCESS) or EXECUTION_MODE_PROCESS)
-    type_id = str(payload.get("type_id", "") or "")
-    version = str(payload.get("version", "") or "")
+    identity = read_rpa_job_identity(payload)
+    execution_mode, type_id, version = identity["execution_mode"], identity["type_id"], identity["version"]
     entrypoint = _payload_dict(payload, "entrypoint")
     work_packet = _payload_dict(payload, "work_packet")
 
@@ -938,9 +1009,10 @@ def execute_rpa_envelope(*, state: ClientState, envelope: Dict[str, Any],
     stdin_bytes: Optional[bytes] = None
     try:
         if execution_mode == EXECUTION_MODE_PROCESS:
-            command = build_process_command(entrypoint=entrypoint)
+            process_plan = plan_process_entrypoint(entrypoint)
+            command = process_plan["command"]
             cwd = _resolve_working_dir(entrypoint=entrypoint, source_dir=resolved_source_dir)
-            delivery = str(entrypoint.get("packet_delivery", PACKET_DELIVERY_FILE) or PACKET_DELIVERY_FILE)
+            delivery = process_plan["packet_delivery"]
             packet_json = json.dumps(work_packet, sort_keys=True)
             if delivery == PACKET_DELIVERY_STDIN:
                 stdin_bytes = packet_json.encode("utf-8")

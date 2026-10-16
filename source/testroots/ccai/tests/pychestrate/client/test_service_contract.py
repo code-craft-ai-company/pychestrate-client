@@ -37,6 +37,17 @@ from ccai.pychestrate.client.build_executor import (
     plan_source_acquisition,
 )
 from ccai.pychestrate.client.progress_reporter import PROGRESS_FORMAT_TAG
+from ccai.pychestrate.client.rpa_executor import (
+    RpaExecutorAspects,
+    _payload_dict,
+    _payload_env,
+    extract_rpa_payload,
+    plan_process_entrypoint,
+    plan_rpa_source,
+    read_rpa_job_identity,
+    resolve_timeout_seconds,
+    tasker_entrypoint,
+)
 from ccai.pychestrate.client.testbase_executor import build_testbase_command
 
 
@@ -100,4 +111,32 @@ def test_the_pod_reads_what_the_contract_says_for_every_build_the_service_sends(
         expected[case["name"]] = case["pod"]
 
     testbase.assert_equal((len(derived) >= 5, derived), (True, expected))
+    return
+
+
+def test_the_pod_reads_what_the_contract_says_for_every_rpa_job_the_service_sends():
+    """
+    **Feature: one contract for both sides (E2E-14)**
+    **Property: for each RPA case in the contract, from the envelope's params and source block exactly as the service sends them the pod derives the contract's job identity and execution
+    mode, environment, timeout, work packet, the process command (with its working directory and how the packet is delivered) or the tasker workflow or tasking, and plans the contract's
+    source acquisition (a git source block, a directory on the pod, or an installed package).**
+    """
+    derived: Dict[str, Any] = {}
+    expected: Dict[str, Any] = {}
+    for case in _contract()["rpa_envelope_params"]:
+        envelope = {"envelope_id": "env-1", "run_id": "run-1", "job_kind": "rpa", "params": case["params"], "source": case["envelope_source"], "refs": {}}
+        payload = extract_rpa_payload(envelope)
+        identity = read_rpa_job_identity(payload)
+        entrypoint = _payload_dict(payload, "entrypoint")
+        derived[case["name"]] = {
+            "execution_mode": identity["execution_mode"], "type_id": identity["type_id"], "version": identity["version"],
+            "environment": _payload_env(payload), "timeout_seconds": resolve_timeout_seconds(payload, RpaExecutorAspects()),
+            "work_packet": _payload_dict(payload, "work_packet"),
+            "process": plan_process_entrypoint(entrypoint) if identity["execution_mode"] == "process" else None,
+            "tasker": tasker_entrypoint(entrypoint) if identity["execution_mode"] == "tasker" else None,
+            "source": plan_rpa_source(envelope=envelope, payload=payload),
+        }
+        expected[case["name"]] = case["pod"]
+
+    testbase.assert_equal((len(derived) >= 6, derived), (True, expected))
     return

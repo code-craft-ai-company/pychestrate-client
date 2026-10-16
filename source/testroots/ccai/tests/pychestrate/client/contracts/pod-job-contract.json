@@ -1,6 +1,6 @@
 {
   "contract_version": 1,
-  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ. build_envelope_params does the same for builds: the params and source block the service's build trigger puts in the envelope, and what the pod derives from them (runner kind, make targets, environment, where the source comes from).",
+  "about": "What the service sends a pod and what the pod must accept, checked by both repositories' tests. The service keeps the original at specs/contracts/pod-job-contract.json in pychestrate-service; pychestrate-client keeps an identical copy under source/testroots/ccai/tests/pychestrate/client/contracts/. Change both together; the service's test fails when it can see the client checkout and the two differ. build_envelope_params does the same for builds: the params and source block the service's build trigger puts in the envelope, and what the pod derives from them (runner kind, make targets, environment, where the source comes from). rpa_envelope_params does the same for RPA jobs: the params and git source block the RPA trigger puts in the envelope, and what the pod derives (job identity, execution mode, environment, timeout, work packet, the process command or the tasker workflow or tasking, and where the code comes from).",
   "progress_format_tag": "testbase-v1",
   "test_run_envelope_params": [
     {
@@ -333,6 +333,482 @@
         "env": {},
         "source": {
           "mode": "none"
+        }
+      }
+    }
+  ],
+  "rpa_envelope_params": [
+    {
+      "name": "a process job from a git tag, with an environment and a packet",
+      "service": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source_kind": "git",
+        "source_ref": "https://git.example.com/rpa-jobs.git#v1.0.0",
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source": {
+          "kind": "git",
+          "ref": "https://git.example.com/rpa-jobs.git#v1.0.0"
+        },
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": {
+        "kind": "git",
+        "url": "https://git.example.com/rpa-jobs.git",
+        "ref": "v1.0.0",
+        "integration_id": "",
+        "credentials_ref": ""
+      },
+      "pod": {
+        "execution_mode": "process",
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "timeout_seconds": 1800.0,
+        "work_packet": {
+          "customer_id": 42
+        },
+        "process": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ],
+          "working_dir": ".",
+          "packet_delivery": "file"
+        },
+        "tasker": null,
+        "source": {
+          "mode": "git",
+          "url": "https://git.example.com/rpa-jobs.git",
+          "ref": "v1.0.0"
+        }
+      }
+    },
+    {
+      "name": "a process job from a git url with no ref runs main",
+      "service": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source_kind": "git",
+        "source_ref": "https://git.example.com/rpa-jobs.git",
+        "entrypoint": {
+          "command": [
+            "./run.sh",
+            "--fast"
+          ],
+          "working_dir": "jobs",
+          "packet_delivery": "stdin"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "timeout_minutes": 5,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source": {
+          "kind": "git",
+          "ref": "https://git.example.com/rpa-jobs.git"
+        },
+        "entrypoint": {
+          "command": [
+            "./run.sh",
+            "--fast"
+          ],
+          "working_dir": "jobs",
+          "packet_delivery": "stdin"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 5,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": {
+        "kind": "git",
+        "url": "https://git.example.com/rpa-jobs.git",
+        "ref": "main",
+        "integration_id": "",
+        "credentials_ref": ""
+      },
+      "pod": {
+        "execution_mode": "process",
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "timeout_seconds": 300.0,
+        "work_packet": {
+          "customer_id": 42
+        },
+        "process": {
+          "command": [
+            "./run.sh",
+            "--fast"
+          ],
+          "working_dir": "jobs",
+          "packet_delivery": "stdin"
+        },
+        "tasker": null,
+        "source": {
+          "mode": "git",
+          "url": "https://git.example.com/rpa-jobs.git",
+          "ref": "main"
+        }
+      }
+    },
+    {
+      "name": "a process job from a directory already on the pod",
+      "service": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source_kind": "local",
+        "source_ref": "/opt/jobs",
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {},
+        "work_packet": {},
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "execution_mode": "process",
+        "source": {
+          "kind": "local",
+          "ref": "/opt/jobs"
+        },
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {},
+        "work_packet": {},
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": null,
+      "pod": {
+        "execution_mode": "process",
+        "type_id": "invoice-import",
+        "version": "1.0.0",
+        "environment": {},
+        "timeout_seconds": 1800.0,
+        "work_packet": {},
+        "process": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ],
+          "working_dir": ".",
+          "packet_delivery": "file"
+        },
+        "tasker": null,
+        "source": {
+          "mode": "local",
+          "path": "/opt/jobs"
+        }
+      }
+    },
+    {
+      "name": "a process job whose code is installed on the pod",
+      "service": {
+        "type_id": "invoice-import",
+        "version": "1.2.0",
+        "execution_mode": "process",
+        "source_kind": "package",
+        "source_ref": "rpa-jobs==1.2",
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "invoice-import",
+        "version": "1.2.0",
+        "execution_mode": "process",
+        "source": {
+          "kind": "package",
+          "ref": "rpa-jobs==1.2"
+        },
+        "entrypoint": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ]
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": null,
+      "pod": {
+        "execution_mode": "process",
+        "type_id": "invoice-import",
+        "version": "1.2.0",
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "timeout_seconds": 1800.0,
+        "work_packet": {
+          "customer_id": 42
+        },
+        "process": {
+          "command": [
+            "python",
+            "-m",
+            "jobs.invoice_import"
+          ],
+          "working_dir": ".",
+          "packet_delivery": "file"
+        },
+        "tasker": null,
+        "source": {
+          "mode": "package",
+          "ref": "rpa-jobs==1.2"
+        }
+      }
+    },
+    {
+      "name": "a tasker job running a workflow file from a git ref",
+      "service": {
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "execution_mode": "tasker",
+        "source_kind": "git",
+        "source_ref": "https://git.example.com/flows.git@@release",
+        "entrypoint": {
+          "workflow": "workflows/invoice.yaml"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "execution_mode": "tasker",
+        "source": {
+          "kind": "git",
+          "ref": "https://git.example.com/flows.git@@release"
+        },
+        "entrypoint": {
+          "workflow": "workflows/invoice.yaml"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": {
+        "kind": "git",
+        "url": "https://git.example.com/flows.git",
+        "ref": "release",
+        "integration_id": "",
+        "credentials_ref": ""
+      },
+      "pod": {
+        "execution_mode": "tasker",
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "timeout_seconds": 1800.0,
+        "work_packet": {
+          "customer_id": 42
+        },
+        "process": null,
+        "tasker": {
+          "workflow": "workflows/invoice.yaml"
+        },
+        "source": {
+          "mode": "git",
+          "url": "https://git.example.com/flows.git",
+          "ref": "release"
+        }
+      }
+    },
+    {
+      "name": "a tasker job running a tasking, from a directory on the pod",
+      "service": {
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "execution_mode": "tasker",
+        "source_kind": "local",
+        "source_ref": "/opt/flows",
+        "entrypoint": {
+          "tasking": "jobs.invoice@InvoiceImport"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3,
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "params": {
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "execution_mode": "tasker",
+        "source": {
+          "kind": "local",
+          "ref": "/opt/flows"
+        },
+        "entrypoint": {
+          "tasking": "jobs.invoice@InvoiceImport"
+        },
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "work_packet": {
+          "customer_id": 42
+        },
+        "packet_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "timeout_minutes": 30,
+        "spec_id": "5345db63-f0dc-46cc-b856-1193d680dab7",
+        "spec_name": "nightly",
+        "spec_revision": 3
+      },
+      "envelope_source": null,
+      "pod": {
+        "execution_mode": "tasker",
+        "type_id": "ledger-sync",
+        "version": "1.0.0",
+        "environment": {
+          "LEDGER_URL": "https://ledger.example.com"
+        },
+        "timeout_seconds": 1800.0,
+        "work_packet": {
+          "customer_id": 42
+        },
+        "process": null,
+        "tasker": {
+          "tasking": "jobs.invoice@InvoiceImport"
+        },
+        "source": {
+          "mode": "local",
+          "path": "/opt/flows"
         }
       }
     }
