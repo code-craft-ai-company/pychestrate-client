@@ -4,10 +4,10 @@ description = "Pychestrate - pod-side runtime client (enroll, dispatch, testbase
 version = "0.0.1"
 authors = []
 readme = "README.rst"
-license = "LICENSE.txt"
+license = "LicenseRef-CodeCraftAI-Source-Available"
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Operating System :: POSIX",
     "Private :: Do Not Upload"
 ]
