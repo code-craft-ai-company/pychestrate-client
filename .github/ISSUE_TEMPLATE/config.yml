@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem (private)
+    url: https://github.com/code-craft-ai-company/pychestrate-client/security/advisories/new
+    about: Do not open a public issue for a security problem. Report it privately.

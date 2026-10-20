@@ -1,0 +1,25 @@
+name: Feature request
+description: Suggest something this project should do.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This project is source-available and takes issues only, not pull requests. A clear description of the problem helps most.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The task or problem, and why the current behaviour does not serve it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
