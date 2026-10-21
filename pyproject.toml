@@ -8,8 +8,7 @@ license = "LicenseRef-CodeCraftAI-Source-Available"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: Other/Proprietary License",
-    "Operating System :: POSIX",
-    "Private :: Do Not Upload"
+    "Operating System :: POSIX"
 ]
 keywords = [
     "python",

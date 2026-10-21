@@ -293,12 +293,21 @@ def test_enroll_takes_server_url_like_pyc_and_still_takes_the_older_service_url(
     return
 
 
+def _shows_both_spellings_server_first(help_text: str) -> bool:
+    """
+        True when the help lists ``--server-url`` before ``--service-url``. Python before 3.13 prints the metavar after each
+        spelling (``--server-url URL, --service-url URL``); 3.13 and later print it once (``--server-url, --service-url URL``).
+    """
+    import re
+    return re.search(r"--server-url(?: URL)?, --service-url URL", help_text) is not None
+
+
 def test_enroll_help_names_the_shared_spelling_first_and_the_state_default():
     code, out, _err = _run(["enroll", "--help"])
     top_code, top_out, _top_err = _run(["--help"])
 
     testbase.assert_equal(
-        (code, "--server-url URL, --service-url URL" in out, "pyc login --server-url" in out,
+        (code, _shows_both_spellings_server_first(out), "pyc login --server-url" in out,
          top_code, "--server-url" in top_out and "--service-url" not in top_out, ".local/share/pychestrate-client" in out),
         (0, True, True, 0, True, True),
     )

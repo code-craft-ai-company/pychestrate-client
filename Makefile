@@ -94,7 +94,7 @@ dist-build: ## Build the sdist and wheel into dist/
 dist-publish: ## Upload dist/* to a PRIVATE index: REPOSITORY=<poetry repository name> CONFIRM=1
 	@if [ -z "$(REPOSITORY)" ]; then \
 		echo "dist-publish: refusing to run without REPOSITORY=<name>." >&2; \
-		echo "  pychestrate-client is proprietary; a bare 'poetry publish' would upload it to public PyPI." >&2; \
+		echo "  pychestrate-client is released to PyPI only by .github/workflows/publish.yml (tests, checks and an approval); a bare 'poetry publish' would upload to public PyPI and skip all three." >&2; \
 		echo "  Configure the private index once:  poetry config repositories.<name> https://<private-index>/" >&2; \
 		echo "  then:  make dist-publish REPOSITORY=<name> CONFIRM=1" >&2; \
 		exit 2; \

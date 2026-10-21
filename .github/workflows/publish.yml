@@ -1,0 +1,158 @@
+# Publishes pychestrate-client to PyPI.
+#
+# Runs when the version in pyproject.toml changes on main, and on demand through
+# workflow_dispatch (``force``). A release has to clear four gates, in this order:
+#
+# 1. ``test``   -- the repository's own tests (test.yml) must pass.
+# 2. ``build``  -- the wheel and sdist are built and must pass ``twine check --strict``
+#                  (the README has to render the way PyPI renders it).
+# 3. ``pypi``   -- the job waits for approval of the ``pypi`` environment (required
+#                  reviewers; deployments are limited to main).
+# 4. The upload uses PyPI trusted publishing: no token is stored anywhere. PyPI
+#    exchanges this job's OIDC identity for a short-lived upload token.
+#
+# One-time setup on pypi.org (Account settings > Publishing > Add a new pending
+# publisher), before the first release:
+#
+#     PyPI project name : pychestrate-client
+#     Owner             : code-craft-ai-company
+#     Repository name   : pychestrate-client
+#     Workflow name     : publish.yml
+#     Environment name  : pypi
+#
+# PyPI accepts a version once and never again, and a deleted release's number
+# cannot be reused. To release: raise ``version`` in pyproject.toml, push to main,
+# and approve the ``pypi`` deployment. To re-run the pipeline for the current
+# version (a failed run, or the first release), run this workflow by hand with
+# ``force`` set; PyPI refuses a version it already has.
+
+name: Publish
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Publish even if the version did not change"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.version.outputs.changed }}
+      current: ${{ steps.version.outputs.current }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # HEAD~1 is needed to tell whether the version actually changed.
+          fetch-depth: 2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Determine whether the version changed
+        id: version
+        run: |
+          read_version () {
+            python3 - "$1" <<'PY'
+          import sys, tomllib
+          try:
+              data = tomllib.loads(sys.argv[1])
+          except Exception:
+              print("")
+              sys.exit(0)
+          project = data.get("project", {})
+          print(project.get("version") or data.get("tool", {}).get("poetry", {}).get("version", ""))
+          PY
+          }
+
+          current=$(read_version "$(cat pyproject.toml)")
+          if [ -z "$current" ]; then
+            echo "::error::pyproject.toml declares no version."
+            exit 1
+          fi
+
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            previous=$(read_version "$(git show HEAD~1:pyproject.toml 2>/dev/null || true)")
+          else
+            previous=""
+          fi
+
+          echo "current=${current}" >> "$GITHUB_OUTPUT"
+
+          if [ "${current}" = "${previous}" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Version is unchanged at ${current}; nothing to publish."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Version ${previous:-<none>} -> ${current}; publishing."
+          fi
+
+  test:
+    name: test
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    uses: ./.github/workflows/test.yml
+
+  build:
+    name: build and check
+    needs: [version, test]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          pipx install poetry
+          pipx install twine
+
+      - name: Build wheel + sdist
+        run: |
+          poetry build
+          ls -l dist/
+
+      - name: Check the distributions
+        run: twine check --strict dist/*
+
+      - name: Keep the distributions for the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    name: upload to PyPI
+    needs: [version, build]
+    if: needs.version.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pychestrate-client/
+    permissions:
+      # Trusted publishing exchanges this job's OIDC token for a PyPI upload token.
+      id-token: write
+    steps:
+      - name: Fetch the distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

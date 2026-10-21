@@ -1,0 +1,45 @@
+# Runs the repository's tests. publish.yml calls this workflow, so a version whose tests fail is never released.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: |
+          poetry config virtualenvs.in-project true
+          poetry install --no-interaction
+
+      - name: Run the tests
+        run: make test TEST_OUTPUT=.output/ci
+
+      - name: Fail on modules that did not import
+        run: |
+          # testbase skips a module that fails to import and still reports PASSED,
+          # so a non-empty import-error file is a failure.
+          if [ -s .output/ci/import_errors.jsos ]; then
+            cat .output/ci/import_errors.jsos
+            exit 1
+          fi
