@@ -21,22 +21,17 @@ packages = [{include="ccai", from="source/packages"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-codecraftai-foundations = { version = "<2.0.0", source = "codecraftai" }
-codecraftai-credentials = { version = "<2.0.0", source = "codecraftai" }
-codecraftai-restclient-base = { version = "<2.0.0", source = "codecraftai" }
-codecraftai-testbase = { version = "<2.0.0", source = "codecraftai" }
-codecraftai-restclient-pychestrate = { version = "<2.0.0", source = "codecraftai" }
+codecraftai-foundations = ">=1.0.0,<2.0.0"
+codecraftai-credentials = ">=1.0.0,<2.0.0"
+codecraftai-restclient-base = ">=1.0.0,<2.0.0"
+codecraftai-testbase = ">=1.0.0,<2.0.0"
+codecraftai-restclient-pychestrate = ">=1.0.0,<2.0.0"
 cryptography = ">=42.0.0"
 
 [tool.poetry.group.dev.dependencies]
 
 [tool.poetry.scripts]
 pychestrate-client = "ccai.pychestrate.client.cli:main"
-
-[[tool.poetry.source]]
-name = "codecraftai"
-url = "https://code-craft.ai/licensed-repository/simple/"
-priority = "supplemental"
 
 [build-system]
 requires = ["poetry-core"]

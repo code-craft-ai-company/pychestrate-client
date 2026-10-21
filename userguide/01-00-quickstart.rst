@@ -29,9 +29,8 @@ You need:
   ``git`` and ``make`` for builds, and the ``testbase`` command for test
   jobs. The client starts ``testbase`` by name, so it must be on the ``PATH``
   of the process that runs the client (see `Run it as a service`_).
-- **Access to the private package index** that carries the ``codecraftai-*``
-  packages this client depends on. ``pychestrate-service``'s
-  ``userguide/02-00-getting-started.rst`` explains how to get it.
+- **Access to PyPI.** The ``codecraftai-*`` packages this client depends on are
+  published there, and ``pip`` fetches them when it installs the client.
 - **An administrator** who can open **Admin**, **Enrollment Tokens**.
 
 
@@ -44,14 +43,13 @@ from the system Python:
 .. code-block:: bash
 
    sudo python3 -m venv /opt/pychestrate-client
-   sudo /opt/pychestrate-client/bin/pip install \
-       --extra-index-url https://code-craft.ai/licensed-repository/simple/ \
-       /path/to/pychestrate-client
+   sudo /opt/pychestrate-client/bin/pip install /path/to/pychestrate-client
 
 Replace ``/path/to/pychestrate-client`` with a checkout of this repository,
 or with the package name if your organization publishes the client to a
 private index (``make dist-publish REPOSITORY=<name>``, see the Makefile).
-The package is proprietary; it is never uploaded to a public index.
+The client is source-available (see ``LICENSE.md``) and is not published to
+PyPI; install it from a checkout.
 
 Installing creates the ``pychestrate-client`` command inside the environment's
 ``bin`` directory. It is on your ``PATH`` only if you put that directory
@@ -288,9 +286,7 @@ directory is untouched, so the pod keeps its identity:
 
 .. code-block:: bash
 
-   sudo /opt/pychestrate-client/bin/pip install --upgrade \
-       --extra-index-url https://code-craft.ai/licensed-repository/simple/ \
-       /path/to/pychestrate-client
+   sudo /opt/pychestrate-client/bin/pip install --upgrade /path/to/pychestrate-client
    sudo systemctl restart pychestrate-client
 
 The restart waits for a running job, as described under `Step 4 - Run it`_.
