@@ -43,13 +43,12 @@ from the system Python:
 .. code-block:: bash
 
    sudo python3 -m venv /opt/pychestrate-client
-   sudo /opt/pychestrate-client/bin/pip install /path/to/pychestrate-client
+   sudo /opt/pychestrate-client/bin/pip install pychestrate-client
 
-Replace ``/path/to/pychestrate-client`` with a checkout of this repository,
-or with the package name if your organization publishes the client to a
-private index (``make dist-publish REPOSITORY=<name>``, see the Makefile).
-The client is source-available (see ``LICENSE.md``) and is not published to
-PyPI; install it from a checkout.
+The client is published on PyPI as ``pychestrate-client`` (source-available;
+see ``LICENSE.md``). To run a version that has not been released yet, install
+from a checkout of this repository instead:
+``sudo /opt/pychestrate-client/bin/pip install /path/to/pychestrate-client``.
 
 Installing creates the ``pychestrate-client`` command inside the environment's
 ``bin`` directory. It is on your ``PATH`` only if you put that directory
@@ -286,7 +285,7 @@ directory is untouched, so the pod keeps its identity:
 
 .. code-block:: bash
 
-   sudo /opt/pychestrate-client/bin/pip install --upgrade /path/to/pychestrate-client
+   sudo /opt/pychestrate-client/bin/pip install --upgrade pychestrate-client
    sudo systemctl restart pychestrate-client
 
 The restart waits for a running job, as described under `Step 4 - Run it`_.
