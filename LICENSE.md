@@ -1,5 +1,5 @@
 # Code Craft AI - Source Available License
-Version 1.0, October 2026
+Version 1.1, November 2026
 
 Copyright (C) 2026, Code Craft AI LLC
 
@@ -7,12 +7,12 @@ Everyone is permitted to copy and distribute verbatim copies of *This License* d
 
 *This License* covers the Python Automation Kit, the full suite of software published by *Licensor* that consists of every `codecraftai-*` package, every `pychestrate` package, and the `pychestrate` server.
 
-*The Software* is source available.  Its source code is published so that anyone can read it, learn from it, and use it, but *This License* is not an open source license.  *The Software* is free to use for *Non-Commercial Use*.  *Commercial Use* is permitted in exchange for a *Usage Fee* that is based on a reasonable estimation of the income derived from *The Software*, as described in section 5.  When a company migrates a product or service to *The Software* from another code base, the *Profit* from that product or service is not counted toward the *Usage Fee* for two years, as described in section 5.4.  For assurance of costs, a company can disclose its usage and estimated returns to *Licensor* and negotiate a fixed license cost, as described in section 5.10.
+*The Software* is source available.  Its source code is published so that anyone can read it, learn from it, and use it, but *This License* is not an open source license.  *The Software* is free to use for *Non-Commercial Use*.  *Commercial Use* is permitted in exchange for a *Usage Fee* that is based on a reasonable estimation of the income derived from *The Software*, as described in section 5.  That estimation starts from *Gross Income*, not net profit, so spending on research and development or other operating expenses does not reduce it.  When a company migrates a product or service to *The Software* from another code base, the *Gross Income* from that product or service is not counted toward the *Usage Fee* for two years, as described in section 5.4.  For assurance of costs, a company can disclose its usage and estimated returns to *Licensor* and negotiate a fixed license cost, as described in section 5.10.
 
 ## 1. Definitions
 
 ### 1.1 *This License* or *The License*
-**This License** or **The License** refers to version 1.0 of the Code Craft AI - Source Available License.
+**This License** or **The License** refers to version 1.1 of the Code Craft AI - Source Available License.
 
 ### 1.2 Licensor
 **Licensor** refers to Code Craft AI LLC.
@@ -42,14 +42,14 @@ Everyone is permitted to copy and distribute verbatim copies of *This License* d
 ### 1.9 Fiscal Year
 **Fiscal Year** means the annual accounting period that *You* use for financial reporting.
 
-### 1.10 Profit
-**Profit** means the net profit that *You* earn from the *Commercial Activity* during a *Fiscal Year*, determined under the accounting principles that *You* regularly use for financial reporting.
+### 1.10 Gross Income
+**Gross Income** means, for each product or service in connection with which *You* make *Commercial Use* of *The Software*, the gross profit that *You* earn from that product or service during a *Fiscal Year*: the revenue from that product or service, less its cost of goods sold or cost of revenue, determined under the accounting principles that *You* regularly use for financial reporting.  *Gross Income* is calculated before operating expenses, such as research and development, sales and marketing, and general and administrative expenses, and before interest and taxes.  *Gross Income* is measured for the products and services that *The Software* is used for, not for *Your* business as a whole.
 
 ### 1.11 Contribution Estimate
-**Contribution Estimate** means *Your* reasonable, good faith estimate of the portion of the *Profit* that *The Software* contributed to, expressed as a number from 0 to 1.
+**Contribution Estimate** means *Your* reasonable, good faith estimate of the portion of the *Gross Income* that *The Software* contributed to, expressed as a number from 0 to 1.
 
 ### 1.12 Derived Income
-**Derived Income** means the portion of the *Profit* for a *Fiscal Year* that is derived from *The Software*, calculated as described in section 5.2.
+**Derived Income** means the portion of the *Gross Income* for a *Fiscal Year* that is derived from *The Software*, calculated as described in section 5.2.
 
 ### 1.13 Usage Fee
 **Usage Fee** means the yearly fee for *Commercial Use* that is set by the table in section 5.3.
@@ -58,7 +58,7 @@ Everyone is permitted to copy and distribute verbatim copies of *This License* d
 **Migration** means moving the work for one of *Your* products or services from a code base other than *The Software*, such as another framework, another library, or *Your* own code, to *The Software*.
 
 ### 1.15 Migration Period
-**Migration Period** means the two (2) year period, described in section 5.4, during which the *Profit* from a product or service that *You* are migrating to *The Software* is not counted.
+**Migration Period** means the two (2) year period, described in section 5.4, during which the *Gross Income* from a product or service that *You* are migrating to *The Software* is not counted.
 
 ## 2. License Grant
 
@@ -96,11 +96,11 @@ For each *Fiscal Year* in which *You* make *Commercial Use* of *The Software*, *
 ### 5.2 Derived Income
 The *Derived Income* for a *Fiscal Year* is calculated as follows:
 
-    (Contribution Estimate) * (Profit) = (Derived Income)
+    (Contribution Estimate) * (Gross Income) = (Derived Income)
 
-If *You* make *Commercial Use* of *The Software* for more than one product or service, calculate the *Derived Income* for each product or service using its own *Contribution Estimate* and *Profit*, and add the results together.  The *Profit* from a product or service that is in its *Migration Period* is not counted, as described in section 5.4.
+If *You* make *Commercial Use* of *The Software* for more than one product or service, calculate the *Derived Income* for each product or service using its own *Contribution Estimate* and *Gross Income*, and add the results together.  The *Gross Income* from a product or service that is in its *Migration Period* is not counted, as described in section 5.4.
 
-If the *Profit* from a product or service for a *Fiscal Year* is zero or less, then the *Derived Income* from that product or service for that *Fiscal Year* is zero.
+If the *Gross Income* from a product or service for a *Fiscal Year* is zero or less, then the *Derived Income* from that product or service for that *Fiscal Year* is zero.
 
 ### 5.3 Usage Fee
 The *Usage Fee* for a *Fiscal Year* is set by the *Derived Income* for that *Fiscal Year*, as shown in the following table.
@@ -113,23 +113,25 @@ The *Usage Fee* for a *Fiscal Year* is set by the *Derived Income* for that *Fis
 | More than 100,000,000, up to and including 1,000,000,000 | 250,000 |
 | More than 1,000,000,000 | 500,000 |
 
-All amounts in this section 5 are in United States dollars.  If *You* report *Profit* in a different currency, convert the *Derived Income* to United States dollars using the average exchange rate for the *Fiscal Year*.
+All amounts in this section 5 are in United States dollars.  If *You* report *Gross Income* in a different currency, convert the *Derived Income* to United States dollars using the average exchange rate for the *Fiscal Year*.
 
 ### 5.4 Migration Allowance
-When *You* migrate a product or service to *The Software*, the *Profit* from that product or service is not counted when calculating the *Derived Income* during its *Migration Period* (the **Migration Allowance**).
+When *You* migrate a product or service to *The Software*, the *Gross Income* from that product or service is not counted when calculating the *Derived Income* during its *Migration Period* (the **Migration Allowance**).
 
 The *Migration Period* for a product or service begins on the date that *You* first make *Commercial Use* of *The Software* for that product or service as part of its *Migration*, and ends two (2) years after that date.
 
 The *Migration Allowance* applies to each product or service separately, and *You* may use it for every product or service that *You* migrate.  Each product or service has only one *Migration Period*.
 
-If a *Fiscal Year* is only partly within the *Migration Period* of a product or service, the *Profit* from that product or service for that *Fiscal Year* is reduced in proportion to the number of days of that *Fiscal Year* that fall within its *Migration Period*.
+If a *Fiscal Year* is only partly within the *Migration Period* of a product or service, the *Gross Income* from that product or service for that *Fiscal Year* is reduced in proportion to the number of days of that *Fiscal Year* that fall within its *Migration Period*.
 
-For example, a company tests product A with *The Software* and pays a *Usage Fee* based on the *Profit* from product A.  On March 1, 2027, the company begins moving the testing of product B from a different test framework to *The Software*.  The company does not count the *Profit* from product B in its *Derived Income* from March 1, 2027 until March 1, 2029.  Starting March 1, 2029, the *Profit* from product B is counted.  If the company later migrates product C, the *Profit* from product C is not counted for two years from the start of its own *Migration*.
+For example, a company tests product A with *The Software* and pays a *Usage Fee* based on the *Gross Income* from product A.  On March 1, 2027, the company begins moving the testing of product B from a different test framework to *The Software*.  The company does not count the *Gross Income* from product B in its *Derived Income* from March 1, 2027 until March 1, 2029.  Starting March 1, 2029, the *Gross Income* from product B is counted.  If the company later migrates product C, the *Gross Income* from product C is not counted for two years from the start of its own *Migration*.
 
 ### 5.5 Contribution Estimate
 *You* are responsible for making the *Contribution Estimate*.  A *Contribution Estimate* must be reasonable and made in good faith.  The *Contribution Estimate* for a product or service covers all of the *Components* that *You* *Use* for that product or service.  When making the *Contribution Estimate*, *You* should consider how important *The Software* is to the *Commercial Activity*, how much of the *Commercial Activity* depends on *The Software*, and the effort and cost that *You* would otherwise need to spend to accomplish what *The Software* accomplishes for *You*.
 
 The following table is a guide for making the *Contribution Estimate*.  When *Your* *Commercial Use* of *The Software* matches an entry in the table, the *Contribution Estimate* in that entry is a reasonable *Contribution Estimate*.  When *Your* *Commercial Use* does not match an entry in the table, make the *Contribution Estimate* by comparing *Your* *Commercial Use* with the entries in the table.  When more than one entry matches the same *Commercial Activity*, use the entry with the highest *Contribution Estimate*.
+
+Many products are not software, such as devices, machines, vehicles, and other physical goods, and software accounts for only part of what such a product is worth.  For a product or service that is not software, *You* may reduce the *Contribution Estimate* in proportion to the share of the value of the shipped product that its software reasonably accounts for.  To do so, multiply the *Contribution Estimate* from the table by that share, expressed as a number from 0 to 1.  *You* must keep records that reasonably support that share, as described in section 5.8.
 
 | Commercial Use of *The Software* | Contribution Estimate |
 |----------------------------------|-----------------------|
@@ -137,32 +139,39 @@ The following table is a guide for making the *Contribution Estimate*.  When *Yo
 | Products Completely Based on *The Software*: the products or services of the *Commercial Activity* are built completely on *The Software* | 0.5 |
 
 ### 5.6 Examples
-A company earns 1,000,000,000 in *Profit* from a product line during a *Fiscal Year*.  The company uses *The Software* for the QA and CI of that product line, so the *Contribution Estimate* is 0.3.
+A company earns 1,000,000,000 in *Gross Income* from a product line during a *Fiscal Year*.  The company uses *The Software* for the QA and CI of that product line, so the *Contribution Estimate* is 0.3.
 
     0.3 * 1,000,000,000 = 300,000,000
 
 The *Derived Income* of 300,000,000 is more than 100,000,000 and not more than 1,000,000,000, so the *Usage Fee* for that *Fiscal Year* is 250,000.
 
-A company earns 4,000,000 in *Profit* from a product during a *Fiscal Year*.  The product is built completely on *The Software*, so the *Contribution Estimate* is 0.5.
+A company earns 4,000,000 in *Gross Income* from a product during a *Fiscal Year*.  The product is built completely on *The Software*, so the *Contribution Estimate* is 0.5.
 
     0.5 * 4,000,000 = 2,000,000
 
 The *Derived Income* of 2,000,000 is more than 1,000,000 and not more than 10,000,000, so the *Usage Fee* for that *Fiscal Year* is 50,000.
 
-A company earns 3,000,000 in *Profit* from a product line during a *Fiscal Year*.  The company uses *The Software* for the QA and CI of that product line, so the *Contribution Estimate* is 0.3.
+A company earns 3,000,000 in *Gross Income* from a product line during a *Fiscal Year*.  The company uses *The Software* for the QA and CI of that product line, so the *Contribution Estimate* is 0.3.
 
     0.3 * 3,000,000 = 900,000
 
 The *Derived Income* of 900,000 is 1,000,000 or less, so there is no *Usage Fee* for that *Fiscal Year*.
 
+A company earns 50,000,000 in *Gross Income* from a line of medical devices during a *Fiscal Year*.  The company uses *The Software* for the QA and CI of the devices, so the *Contribution Estimate* from the table is 0.3.  The devices are not software, and the company reasonably estimates that their software accounts for one fifth (0.2) of the value of each shipped device, so the company reduces the *Contribution Estimate* to 0.06.
+
+    0.3 * 0.2 = 0.06
+    0.06 * 50,000,000 = 3,000,000
+
+The *Derived Income* of 3,000,000 is more than 1,000,000 and not more than 10,000,000, so the *Usage Fee* for that *Fiscal Year* is 50,000.  Without the reduction, the *Derived Income* would be 15,000,000 and the *Usage Fee* would be 100,000.
+
 ### 5.7 Reporting and Payment
-Within one hundred twenty (120) days after the end of each *Fiscal Year* for which a *Usage Fee* is owed, *You* must pay the *Usage Fee* to *Licensor* and provide *Licensor* with a written statement that shows the *Profit*, the *Contribution Estimate*, the reasoning used to make the *Contribution Estimate*, the *Derived Income*, and the *Usage Fee*.  *Usage Fees* are payable in United States dollars.  If any *Profit* is not counted under section 5.4, the statement must also identify each product or service that is in a *Migration Period* and show the dates of its *Migration Period*.  No statement is required for a *Fiscal Year* in which no *Usage Fee* is owed.
+Within one hundred twenty (120) days after the end of each *Fiscal Year* for which a *Usage Fee* is owed, *You* must pay the *Usage Fee* to *Licensor* and provide *Licensor* with a written statement that shows the *Gross Income*, the *Contribution Estimate*, the reasoning used to make the *Contribution Estimate*, the *Derived Income*, and the *Usage Fee*.  *Usage Fees* are payable in United States dollars.  If any *Gross Income* is not counted under section 5.4, the statement must also identify each product or service that is in a *Migration Period* and show the dates of its *Migration Period*.  No statement is required for a *Fiscal Year* in which no *Usage Fee* is owed.
 
 ### 5.8 Records and Review
-*You* must keep records that reasonably support each *Contribution Estimate*, each *Profit* figure, and the dates of any *Migration Period* for at least three (3) years after the end of the *Fiscal Year* that they apply to.  No more than once in any twelve (12) month period, *Licensor* may ask in writing for the records that support a statement, and *You* must provide them within sixty (60) days of the request.  *Licensor* will treat those records as confidential.
+*You* must keep records that reasonably support each *Contribution Estimate*, including any share used to reduce it under section 5.5, each *Gross Income* figure, and the dates of any *Migration Period* for at least three (3) years after the end of the *Fiscal Year* that they apply to.  No more than once in any twelve (12) month period, *Licensor* may ask in writing for the records that support a statement, and *You* must provide them within sixty (60) days of the request.  *Licensor* will treat those records as confidential.
 
 ### 5.9 Disputes About the Usage Fee
-If *Licensor* believes that a *Contribution Estimate*, a *Profit* figure, or the dates of a *Migration Period* are not reasonable, *Licensor* will notify *You* in writing and explain why.  *You* and *Licensor* will then negotiate in good faith for at least sixty (60) days to agree on a reasonable *Usage Fee*.  If *You* and *Licensor* cannot agree, either party may resolve the dispute as described in section 8.
+If *Licensor* believes that a *Contribution Estimate*, a *Gross Income* figure, or the dates of a *Migration Period* are not reasonable, *Licensor* will notify *You* in writing and explain why.  *You* and *Licensor* will then negotiate in good faith for at least sixty (60) days to agree on a reasonable *Usage Fee*.  If *You* and *Licensor* cannot agree, either party may resolve the dispute as described in section 8.
 
 ### 5.10 Fixed License Cost
 For assurance of costs, *You* may disclose to *Licensor* how *You* *Use* *The Software* and the returns that *You* estimate *You* will derive from it, and negotiate a fixed license cost with *Licensor*.  A fixed license cost, and any other terms that *You* and *Licensor* agree to, must be set out in a writing signed by both *You* and *Licensor* (a **Fixed License Agreement**).
